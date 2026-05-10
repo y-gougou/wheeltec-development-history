@@ -243,6 +243,22 @@ def inspect(path, args):
     cmd_vx = finite_values(df, "cmd_vx")
     if len(cmd_vx) > 0 and (cmd_vx.abs() > 0.1).sum() == 0:
         warn(warnings, "cmd_vx never enters motion stage")
+    if len(cmd_vx) > 0 and cmd_vx.abs().max() > args.expected_cmd_abs + args.cmd_tolerance:
+        warn(
+            warnings,
+            "cmd_vx abs max %.3f exceeds expected %.3f by more than %.3f"
+            % (cmd_vx.abs().max(), args.expected_cmd_abs, args.cmd_tolerance),
+        )
+
+    cmd_wz = finite_values(df, "cmd_wz")
+    motion_modes = [str(v) for v in df.get("motion_mode", pd.Series(dtype=str)).dropna().unique()]
+    is_straight_mode = any("straight" in mode for mode in motion_modes)
+    if is_straight_mode and len(cmd_wz) > 0 and cmd_wz.abs().max() > args.max_straight_cmd_wz:
+        warn(
+            warnings,
+            "straight motion contains large cmd_wz abs max %.3f; use forward/backward translation without turning"
+            % cmd_wz.abs().max(),
+        )
 
     currents = [finite_values(df, c) for c in ["current0", "current1", "current2"]]
     if all(len(s) > 0 and s.abs().max() < 1e-6 for s in currents):
@@ -265,6 +281,9 @@ def main():
     parser.add_argument("--dt_tolerance", type=float, default=0.01)
     parser.add_argument("--max_cmd_age", type=float, default=0.20)
     parser.add_argument("--max_current_age", type=float, default=0.35)
+    parser.add_argument("--expected_cmd_abs", type=float, default=0.25)
+    parser.add_argument("--cmd_tolerance", type=float, default=0.20)
+    parser.add_argument("--max_straight_cmd_wz", type=float, default=0.10)
     parser.add_argument("--expected_run_id", default=None)
     parser.add_argument("--expected_fault_label", default=None)
     parser.add_argument("--expected_fault_name", default=None)

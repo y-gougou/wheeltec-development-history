@@ -235,7 +235,7 @@
           <div class="test-grid">
             <div>
               <label for="testVx">Vx (m/s)</label>
-              <input id="testVx" type="number" step="0.05" value="0.50" />
+              <input id="testVx" type="number" step="0.05" value="0.25" />
             </div>
             <div>
               <label for="testDuration">运行时长 (s)</label>
@@ -247,7 +247,7 @@
             </div>
           </div>
           <div class="test-actions">
-            <button class="primary" id="testStartBtn">0.5m/s 直行</button>
+            <button class="primary" id="testStartBtn">0.25m/s 直行</button>
             <button class="secondary" id="testStopBtn">立即停车</button>
             <button class="danger" id="testEstopBtn">急停</button>
           </div>
@@ -876,7 +876,7 @@
     }
 
     function buildTestTwist() {
-      const vx = Math.max(-0.8, Math.min(0.8, parseFloat(testVxInput.value) || 0.5));
+      const vx = Math.max(-0.8, Math.min(0.8, parseFloat(testVxInput.value) || 0.25));
       return {
         linear: { x: vx, y: 0, z: 0 },
         angular: { x: 0, y: 0, z: 0 }

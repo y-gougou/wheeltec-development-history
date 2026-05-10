@@ -3,9 +3,9 @@
     <arg name="fault_name" default="" />
     <arg name="fault_mode" default="0" />
     <arg name="run_id" default="" />
-    <arg name="motion_mode" default="straight_0.5ms" />
+    <arg name="motion_mode" default="straight_0.25ms" />
     <arg name="output_dir" default="/home/wheeltec/R550PLUS_data_collect/log" />
-    <arg name="current_port" default="/dev/ttyUSB0" />
+    <arg name="current_port" default="auto" />
     <arg name="current_baud" default="115200" />
     <arg name="wheel_speed_topic" default="" />
     <arg name="expected_rate" default="20.0" />

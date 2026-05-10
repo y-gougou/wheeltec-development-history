@@ -4,7 +4,7 @@
 Current sensor reader node
 Reads $CURRENT,ch0,ch1,ch2*XX\r\n format current data and publishes to ROS topic
 
-Serial port: /dev/ttyUSB0
+Serial port: auto, /dev/current_sensor, /dev/ttyUSB0, or /dev/ttyUSB1
 Protocol: Text format with XOR checksum
           Format: $CURRENT,-0.0391,-0.0287,-0.1038*7E\r\n
           Checksum: XOR of all bytes from $ to * (exclusive)
@@ -18,8 +18,13 @@ Baud rate: 115200
     data[3] = optional seq if firmware sends $CURRENT,seq,ch0,ch1,ch2*XX
 
 Usage:
-    rosrun turn_on_wheeltec_robot current_reader.py _port:=/dev/ttyUSB0 _baud:=115200
+    rosrun turn_on_wheeltec_robot current_reader.py _port:=auto _baud:=115200
+    rosrun turn_on_wheeltec_robot current_reader.py _port:=/dev/current_sensor _baud:=115200
 """
+
+import glob
+import os
+import time
 
 import rospy
 import serial
@@ -35,28 +40,17 @@ class CurrentReader:
         rospy.init_node('current_reader', anonymous=True)
 
         # Parameters
-        self.port = rospy.get_param('~port', '/dev/ttyUSB0')
+        self.port = rospy.get_param('~port', 'auto')
         self.baud = rospy.get_param('~baud', 115200)
         self.timeout = rospy.get_param('~timeout', 1.0)
+        self.candidate_ports = rospy.get_param(
+            '~candidate_ports',
+            '/dev/current_sensor,/dev/serial/by-id/*,/dev/ttyUSB0,/dev/ttyUSB1,/dev/ttyUSB2,/dev/ttyUSB3'
+        )
+        self.probe_timeout = float(rospy.get_param('~probe_timeout', 2.0))
 
         # Publisher
         self.pub = rospy.Publisher('/current_data', Float32MultiArray, queue_size=10)
-
-        # Open serial port
-        rospy.loginfo("Opening serial port: %s @ %d" % (self.port, self.baud))
-        try:
-            self.serial_port = serial.Serial(
-                port=self.port,
-                baudrate=self.baud,
-                timeout=self.timeout
-            )
-            rospy.loginfo("Serial port opened: %s" % self.serial_port.name)
-        except serial.SerialException as e:
-            rospy.logerr("Cannot open serial port: %s" % e)
-            raise
-
-        # Clear buffer
-        self.serial_port.reset_input_buffer()
 
         # Statistics
         self.frame_count = 0
@@ -65,6 +59,91 @@ class CurrentReader:
         self.checksum_error_count = 0
         self.last_report_time = rospy.Time.now().to_sec()
         self.last_seq = -1
+
+        # Open serial port.  USB serial device numbers may swap between
+        # ttyUSB0 and ttyUSB1, so "auto" probes ports for a valid CURRENT frame.
+        self.serial_port = self.open_current_port()
+
+        # Clear buffer
+        self.serial_port.reset_input_buffer()
+
+    def get_candidate_ports(self):
+        """Return a stable, de-duplicated list of serial port candidates."""
+        if self.port and self.port != 'auto':
+            return [self.port]
+
+        ports = []
+        for item in self.candidate_ports.split(','):
+            pattern = item.strip()
+            if not pattern:
+                continue
+            matched = glob.glob(pattern) if any(ch in pattern for ch in ['*', '?', '[']) else [pattern]
+            for port in sorted(matched):
+                if port not in ports:
+                    ports.append(port)
+        return ports
+
+    def open_serial(self, port, timeout=None):
+        return serial.Serial(
+            port=port,
+            baudrate=self.baud,
+            timeout=self.timeout if timeout is None else timeout
+        )
+
+    def probe_current_port(self, port):
+        """Check whether a port is sending valid $CURRENT frames."""
+        if not os.path.exists(port):
+            return False
+
+        try:
+            ser = self.open_serial(port, timeout=0.2)
+        except serial.SerialException as e:
+            rospy.logwarn("Skip serial candidate %s: %s" % (port, e))
+            return False
+
+        deadline = time.time() + self.probe_timeout
+        try:
+            ser.reset_input_buffer()
+            while time.time() < deadline and not rospy.is_shutdown():
+                line = ser.readline()
+                if not line:
+                    continue
+                try:
+                    line = line.decode('ascii', errors='ignore')
+                except Exception:
+                    continue
+                if FRAME_HEADER in line and self.parse_frame(line):
+                    rospy.loginfo("Detected current sensor on %s" % port)
+                    return True
+        finally:
+            ser.close()
+        return False
+
+    def open_current_port(self):
+        ports = self.get_candidate_ports()
+        if not ports:
+            raise serial.SerialException("No serial candidates for current sensor")
+
+        if self.port and self.port != 'auto':
+            rospy.loginfo("Opening current serial port: %s @ %d" % (self.port, self.baud))
+            ser = self.open_serial(self.port)
+            rospy.loginfo("Serial port opened: %s" % ser.name)
+            return ser
+
+        rospy.loginfo("Auto-detecting current sensor serial port from: %s" % ', '.join(ports))
+        for port in ports:
+            if self.probe_current_port(port):
+                ser = self.open_serial(port)
+                ser.reset_input_buffer()
+                rospy.loginfo("Current serial port opened: %s @ %d" % (ser.name, self.baud))
+                self.port = port
+                return ser
+
+        raise serial.SerialException(
+            "Cannot find current sensor. Tried: %s. "
+            "Check wiring, baudrate, and whether the board is sending $CURRENT frames."
+            % ', '.join(ports)
+        )
 
     def parse_frame(self, line):
         """

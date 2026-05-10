@@ -82,7 +82,7 @@ class DataCollector(object):
             self.fault_label, "unknown"
         )
         self.fault_mode = int(rospy.get_param("~fault_mode", 0))
-        self.motion_mode = rospy.get_param("~motion_mode", "straight_0.5ms")
+        self.motion_mode = rospy.get_param("~motion_mode", "straight_0.25ms")
         self.odom_topic = rospy.get_param("~odom_topic", "/odom")
         self.imu_topic = rospy.get_param("~imu_topic", "/imu")
         self.voltage_topic = rospy.get_param("~voltage_topic", "/PowerVoltage")
