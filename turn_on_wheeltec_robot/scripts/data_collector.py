@@ -101,6 +101,7 @@ class DataCollector(object):
         self.last_record_wall_time = None
         self.csv_file = None
         self.csv_writer = None
+        self.is_shutting_down = False
 
         self.latest = {
             "odom": None,
@@ -178,6 +179,8 @@ class DataCollector(object):
         return self._fmt(max(0.0, now - topic_time))
 
     def _odom_callback(self, msg):
+        if self.is_shutting_down:
+            return
         self.latest["odom"] = msg
         self.latest["odom_time"] = self._stamp_to_sec(msg.header.stamp)
         self._record_row()
@@ -211,6 +214,9 @@ class DataCollector(object):
         self.latest["wheel_speed_time"] = rospy.Time.now().to_sec()
 
     def _record_row(self):
+        if self.is_shutting_down or self.csv_file is None or self.csv_writer is None:
+            return
+
         odom = self.latest["odom"]
         if odom is None:
             return
@@ -288,9 +294,12 @@ class DataCollector(object):
             )
 
     def shutdown(self):
+        self.is_shutting_down = True
         if self.csv_file:
+            self.csv_file.flush()
             self.csv_file.close()
             self.csv_file = None
+            self.csv_writer = None
         rospy.loginfo("data_collector stopped: %d rows", self.sample_id)
 
 

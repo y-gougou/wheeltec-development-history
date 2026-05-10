@@ -24,6 +24,7 @@ Usage:
 
 import glob
 import os
+import sys
 import time
 
 import rospy
@@ -91,15 +92,15 @@ class CurrentReader:
         )
 
     def probe_current_port(self, port):
-        """Check whether a port is sending valid $CURRENT frames."""
+        """Return an opened serial handle if a port is sending valid CURRENT frames."""
         if not os.path.exists(port):
-            return False
+            return None
 
         try:
             ser = self.open_serial(port, timeout=0.2)
         except serial.SerialException as e:
             rospy.logwarn("Skip serial candidate %s: %s" % (port, e))
-            return False
+            return None
 
         deadline = time.time() + self.probe_timeout
         try:
@@ -114,10 +115,17 @@ class CurrentReader:
                     continue
                 if FRAME_HEADER in line and self.parse_frame(line):
                     rospy.loginfo("Detected current sensor on %s" % port)
-                    return True
-        finally:
+                    ser.timeout = self.timeout
+                    ser.reset_input_buffer()
+                    return ser
+        except serial.SerialException as e:
+            rospy.logwarn("Probe failed on %s: %s" % (port, e))
+
+        try:
             ser.close()
-        return False
+        except Exception:
+            pass
+        return None
 
     def open_current_port(self):
         ports = self.get_candidate_ports()
@@ -132,9 +140,8 @@ class CurrentReader:
 
         rospy.loginfo("Auto-detecting current sensor serial port from: %s" % ', '.join(ports))
         for port in ports:
-            if self.probe_current_port(port):
-                ser = self.open_serial(port)
-                ser.reset_input_buffer()
+            ser = self.probe_current_port(port)
+            if ser:
                 rospy.loginfo("Current serial port opened: %s @ %d" % (ser.name, self.baud))
                 self.port = port
                 return ser
@@ -322,3 +329,4 @@ if __name__ == '__main__':
         pass
     except Exception as e:
         rospy.logerr("Startup failed: %s" % e)
+        sys.exit(1)

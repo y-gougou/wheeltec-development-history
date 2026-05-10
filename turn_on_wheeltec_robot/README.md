@@ -99,6 +99,17 @@ roslaunch turn_on_wheeltec_robot data_collector.launch \
   motion_mode:=straight_back_forth_0.25ms \
   expected_rate:=20.0
 
+# 如果自动识别电流串口失败，且确认当前电流板是 ttyUSB1，可临时改用：
+roslaunch turn_on_wheeltec_robot data_collector.launch \
+  current_port:=/dev/ttyUSB1 \
+  output_dir:=/home/wheeltec/R550PLUS_data_collect/log_v2 \
+  fault_label:=0 \
+  fault_name:=normal \
+  fault_mode:=0 \
+  run_id:=normal_001 \
+  motion_mode:=straight_back_forth_0.25ms \
+  expected_rate:=20.0
+
 # 终端 3：启动 Web 控制，禁用重复的数据采集节点
 roslaunch turn_on_wheeltec_robot web_control.launch \
   start_base:=false \
@@ -123,6 +134,36 @@ Web 页面 Rosbridge 地址：
 ```text
 ws://172.20.10.6:9090
 ```
+
+### 采集前电流确认
+
+在 Web 端开始运动前，必须先确认 `/current_data` 正常。如果这里没有新消息，本轮 CSV 的 `current_valid` 会一直为 0，不能作为正式样本。
+
+```bash
+rostopic hz /current_data
+rostopic echo -n 1 /current_data
+```
+
+正常情况下应看到类似三路电流：
+
+```text
+data: [-0.0160, -0.0781, -0.1439]
+```
+
+如果没有消息，先检查串口：
+
+```bash
+ls -l /dev/ttyUSB*
+ls -l /dev/serial/by-id/
+```
+
+当前 `current_reader.py` 默认 `current_port:=auto`，会自动探测 `/dev/current_sensor`、`/dev/serial/by-id/*`、`/dev/ttyUSB0`、`/dev/ttyUSB1` 等端口。如果现场确认电流板在 `/dev/ttyUSB1`，可以在终端 2 命令中加入：
+
+```bash
+current_port:=/dev/ttyUSB1
+```
+
+如果 `current_reader` 进程已经退出，当前正在写的 CSV 不建议作为正式数据，停止采集后重新开始。
 
 ### normal_001 推荐采集流程
 
@@ -237,7 +278,8 @@ python ~/ml_robot_ws/src/turn_on_wheeltec_robot/scripts/inspect_csv.py \
   --expected_fault_name normal \
   --expected_fault_mode 0 \
   --expected_motion_mode straight_back_forth_0.25ms \
-  --expected_rate 20
+  --expected_rate 20 \
+  --expected_cmd_abs 0.25
 ```
 
 如果输出中没有明显 `WARNING`，且 `cmd_vx` 运动阶段接近 `0.250000`、`record_rate` 接近 `20Hz`、`current_valid ratio` 接近 `1.0`，则该 run 可作为合格正常样本。
