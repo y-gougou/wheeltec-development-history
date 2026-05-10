@@ -9,6 +9,8 @@
     <arg name="current_baud" default="115200" />
     <arg name="current_open_retries" default="5" />
     <arg name="current_open_retry_delay" default="0.8" />
+    <arg name="require_current_before_record" default="true" />
+    <arg name="current_wait_timeout" default="20.0" />
     <arg name="wheel_speed_topic" default="" />
     <arg name="expected_rate" default="20.0" />
 
@@ -38,5 +40,7 @@
         <param name="output_dir" value="$(arg output_dir)" />
         <param name="wheel_speed_topic" value="$(arg wheel_speed_topic)" />
         <param name="expected_rate" value="$(arg expected_rate)" />
+        <param name="require_current_before_record" value="$(arg require_current_before_record)" />
+        <param name="current_wait_timeout" value="$(arg current_wait_timeout)" />
     </node>
 </launch>

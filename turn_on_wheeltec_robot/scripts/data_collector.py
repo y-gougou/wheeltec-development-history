@@ -90,6 +90,10 @@ class DataCollector(object):
         self.cmd_topic = rospy.get_param("~cmd_topic", "/cmd_vel")
         self.wheel_speed_topic = rospy.get_param("~wheel_speed_topic", "")
         self.expected_rate = float(rospy.get_param("~expected_rate", 20.0))
+        self.require_current_before_record = bool(
+            rospy.get_param("~require_current_before_record", True)
+        )
+        self.current_wait_timeout = float(rospy.get_param("~current_wait_timeout", 20.0))
 
         if not self.run_id:
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -118,8 +122,10 @@ class DataCollector(object):
             "wheel_speed_time": None,
         }
 
-        self._open_csv_file()
         self._setup_subscribers()
+        if self.require_current_before_record:
+            self._wait_for_initial_current()
+        self._open_csv_file()
 
         rospy.loginfo(
             "data_collector started: run_id=%s label=%d/%s mode=%s expected_rate=%.1fHz",
@@ -129,6 +135,24 @@ class DataCollector(object):
             self.motion_mode,
             self.expected_rate,
         )
+
+    def _wait_for_initial_current(self):
+        rospy.loginfo(
+            "Waiting for first valid current frame on %s before writing CSV (timeout %.1fs)",
+            self.current_topic,
+            self.current_wait_timeout,
+        )
+        deadline = rospy.Time.now().to_sec() + self.current_wait_timeout
+        rate = rospy.Rate(20)
+        while not rospy.is_shutdown() and self.latest["current"] is None:
+            if rospy.Time.now().to_sec() >= deadline:
+                raise rospy.ROSException(
+                    "No current frame received on %s within %.1fs; aborting CSV collection"
+                    % (self.current_topic, self.current_wait_timeout)
+                )
+            rate.sleep()
+        if self.latest["current"] is not None:
+            rospy.loginfo("First valid current frame received; CSV recording can start")
 
     def _setup_subscribers(self):
         rospy.Subscriber(self.odom_topic, Odometry, self._odom_callback, queue_size=50)
