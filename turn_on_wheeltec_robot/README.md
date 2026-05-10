@@ -16,7 +16,7 @@
 | 数据源 | 串口 | 话题 | 通道数 | 频率 |
 |--------|------|------|--------|------|
 | 底盘控制器 | `/dev/ttyCH343USB0` | `/odom`, `/imu`, `/PowerVoltage` | 13通道 | 20Hz |
-| 电流传感器 | `auto`，建议固定为 `/dev/current_sensor` | `/current_data` | 3通道 | 以实测为准 |
+| 电流传感器 | `/dev/ttyUSB1` | `/current_data` | 3通道 | 以实测为准 |
 
 **内部采样频率**：IMU 芯片 MPU6050 内部采样 100Hz，但 ROS 发布频率为 20Hz。
 
@@ -35,7 +35,7 @@
 ## 系统结构
 
 ```
-串口设备 1 (ttyCH343USB0)          串口设备 2 (current_sensor/ttyUSB*)
+串口设备 1 (ttyCH343USB0)          串口设备 2 (ttyUSB1)
         │                                    │
         ▼                                    ▼
 ┌───────────────┐                  ┌─────────────────┐
@@ -83,28 +83,7 @@
 
 ## 数据采集启动方式
 
-本阶段目标是拿到高质量 `normal_001.csv`。启动顺序必须是：
-
-1. 启动底盘；
-2. 单独确认电流串口和 `/current_data`；
-3. 启动 CSV 采集；
-4. 启动 Web 控制；
-5. Web 端开始 0.25m/s 折返直线运动。
-
-不要在电流没确认前直接开车采集。`data_collector.py` 默认会等待第一帧 `/current_data` 到达后才开始写 CSV。
-
-### 0. 更新代码后先确认参数
-
-更新代码到 ROS 主控后，启动 `data_collector.launch` 时参数摘要里应能看到：
-
-```text
-/current_reader/open_retries
-/current_reader/open_retry_delay
-/data_collector/require_current_before_record
-/data_collector/current_wait_timeout
-```
-
-如果看不到这些参数，说明 ROS 主控上还不是最新版代码。
+当前阶段只做一件事：先采一小段正常样本，确认 CSV 质量。电流采集板当前固定使用 `/dev/ttyUSB1`。
 
 ### 1. 启动底盘
 
@@ -114,112 +93,58 @@
 roslaunch turn_on_wheeltec_robot turn_on_wheeltec_robot.launch
 ```
 
-确认 `/odom` 和 `/imu` 约 20Hz：
+确认底盘话题正常：
 
 ```bash
 rostopic hz /odom
 rostopic hz /imu
 ```
 
-### 2. 找到电流采集板串口
+期望：`/odom` 和 `/imu` 约 20Hz。
 
-终端 2 先查看串口：
+### 2. 单独确认电流板
 
-```bash
-ls -l /dev/current_sensor
-ls -l /dev/ttyUSB*
-ls -l /dev/serial/by-id/
-```
-
-优先顺序：
-
-1. `/dev/current_sensor`，如果已经配置 udev 别名；
-2. `/dev/ttyUSB1`；
-3. `/dev/ttyUSB2`；
-4. `/dev/ttyUSB0`；
-5. `/dev/serial/by-id/...` 中对应电流板的设备。
-
-如果某个端口报 `Input/output error`，不要反复用同一个端口启动采集。先试下一个端口；如果全部失败，拔插电流采集板 USB，等待 3-5 秒后重新检查。
-
-### 3. 单独测试电流节点
-
-先不要启动 CSV 采集，只测试 `current_reader.py`。下面几个命令按顺序尝试，哪个能稳定输出就记住哪个端口。
-
-优先测试固定别名：
+终端 2：先只测电流，不启动 CSV。
 
 ```bash
-rosrun turn_on_wheeltec_robot current_reader.py \
-  _port:=/dev/current_sensor \
-  _baud:=115200 \
-  _open_retries:=20 \
-  _open_retry_delay:=1.0
+rosrun turn_on_wheeltec_robot current_reader.py _port:=/dev/ttyUSB1 _baud:=115200
 ```
 
-如果不行，测试 `/dev/ttyUSB1`：
-
-```bash
-rosrun turn_on_wheeltec_robot current_reader.py \
-  _port:=/dev/ttyUSB1 \
-  _baud:=115200 \
-  _open_retries:=20 \
-  _open_retry_delay:=1.0
-```
-
-如果不行，测试 `/dev/ttyUSB2`：
-
-```bash
-rosrun turn_on_wheeltec_robot current_reader.py \
-  _port:=/dev/ttyUSB2 \
-  _baud:=115200 \
-  _open_retries:=20 \
-  _open_retry_delay:=1.0
-```
-
-如果不行，再测试 `/dev/ttyUSB0`：
-
-```bash
-rosrun turn_on_wheeltec_robot current_reader.py \
-  _port:=/dev/ttyUSB0 \
-  _baud:=115200 \
-  _open_retries:=20 \
-  _open_retry_delay:=1.0
-```
-
-成功时应看到类似日志：
-
-```text
-Serial port opened: /dev/ttyUSB1
-Start reading current data
-Current reader: 6.x Hz, ok=..., timeout=0, parse_error=0, checksum_error=0
-```
-
-再开一个终端确认话题：
+另开一个终端检查：
 
 ```bash
 rostopic hz /current_data
 rostopic echo -n 1 /current_data
 ```
 
-合格标准：
+期望：
 
-- `/current_data` 有稳定输出，当前实测约 6-7Hz 可以接受；
-- `rostopic echo -n 1 /current_data` 能看到三路电流；
-- `parse_error=0` 或很少；
-- `checksum_error=0` 或很少。
+- `/current_data` 有稳定输出，当前约 6-7Hz 可以接受；
+- 能看到三路电流值；
+- `current_reader` 日志中 `parse_error` 和 `checksum_error` 为 0 或很少。
 
-确认后按 `Ctrl+C` 停止这个单独测试，再进入下一步。
+如果 `/dev/ttyUSB1` 报 `Input/output error`，先按 `Ctrl+C` 停掉，再尝试：
 
-### 4. 启动 CSV 采集
+```bash
+rosrun turn_on_wheeltec_robot current_reader.py _port:=/dev/ttyUSB2 _baud:=115200
+```
 
-终端 2：使用上一步确认可用的端口。下面以 `/dev/ttyUSB2` 为例；如果你刚才测通的是 `/dev/ttyUSB1` 或 `/dev/current_sensor`，就把 `current_port` 改成对应端口。
+如果 `/dev/ttyUSB2` 也不行，再检查：
+
+```bash
+ls -l /dev/ttyUSB*
+dmesg | tail -n 50
+```
+
+必要时拔插电流采集板 USB，等待 3-5 秒后再测。确认 `/current_data` 正常后，停止这个单独测试。
+
+### 3. 启动 CSV 采集
+
+终端 2：
 
 ```bash
 roslaunch turn_on_wheeltec_robot data_collector.launch \
-  current_port:=/dev/ttyUSB2 \
-  current_open_retries:=20 \
-  current_open_retry_delay:=1.0 \
-  require_current_before_record:=true \
-  current_wait_timeout:=20.0 \
+  current_port:=/dev/ttyUSB1 \
   output_dir:=/home/wheeltec/R550PLUS_data_collect/log_v2 \
   fault_label:=0 \
   fault_name:=normal \
@@ -229,17 +154,22 @@ roslaunch turn_on_wheeltec_robot data_collector.launch \
   expected_rate:=20.0
 ```
 
+如果第 2 步确认可用的是 `/dev/ttyUSB2`，把命令中的 `current_port:=/dev/ttyUSB1` 改成：
+
+```bash
+current_port:=/dev/ttyUSB2
+```
+
 启动后必须看到：
 
 ```text
-Waiting for first valid current frame...
 First valid current frame received; CSV recording can start
 CSV output: ...
 ```
 
-如果没看到 `First valid current frame received`，不要开始运动。
+看到这两句后再开始动车。
 
-### 5. 启动 Web 控制
+### 4. 启动 Web 控制
 
 终端 3：
 
@@ -256,31 +186,33 @@ roslaunch turn_on_wheeltec_robot web_control.launch \
 http://172.20.10.6:8000/
 ```
 
-Web 页面 Rosbridge 地址：
+Rosbridge 地址：
 
 ```text
 ws://172.20.10.6:9090
 ```
 
-### 6. 采集 30 秒短测试
+### 5. 采 30 秒正常短样本
 
 在 Web 页面使用“采集测试驾驶台”：
 
 - `Vx = 0.25`
 - `Vy = 0`
 - `Wz = 0`
-- 先采 30 秒
-- 场地有限时用 `+0.25 / -0.25` 前后折返，不要转向掉头
+- 场地有限时使用 `+0.25 / -0.25` 前后折返
+- 不要用旋转掉头
 
-采集结束后，在终端 2 按 `Ctrl+C` 停止 CSV 采集。
+先采 30 秒。采完后终端 2 按 `Ctrl+C` 停止采集。
 
-### 7. 检查最新 CSV
+### 6. 检查 CSV 质量
+
+找到最新文件：
 
 ```bash
 ls -lt /home/wheeltec/R550PLUS_data_collect/log_v2/ | head
 ```
 
-对最新生成的 CSV 执行质量检查，把文件名替换成实际最新文件：
+运行检查脚本，文件名替换成最新 CSV：
 
 ```bash
 python3 ~/ml_robot_ws/src/turn_on_wheeltec_robot/scripts/inspect_csv.py \
@@ -294,13 +226,7 @@ python3 ~/ml_robot_ws/src/turn_on_wheeltec_robot/scripts/inspect_csv.py \
   --expected_cmd_abs 0.25
 ```
 
-把以下结果发回来：
-
-- `Current reader: ...` 日志；
-- `recorded ... current_age=...` 日志；
-- `rostopic hz /current_data` 输出；
-- `rostopic echo -n 1 /current_data` 输出；
-- `inspect_csv.py` 完整输出。
+把 `inspect_csv.py` 输出发回来，再决定是否进入正式 `normal_001` 或 `normal_002` 采集。
 ### normal_001 推荐采集流程
 
 第一版正常样本建议先采 30 秒验证链路，确认合格后再采完整 70 秒。
@@ -579,10 +505,10 @@ odom_age,imu_age,voltage_age,current_age,cmd_age,record_rate,current_valid
 | `run_id` | 空 | 空时自动生成 |
 | `motion_mode` | `straight_0.25ms` | 运动工况 |
 | `output_dir` | `/home/wheeltec/R550PLUS_data_collect/log` | CSV 输出目录 |
-| `current_port` | `auto` | 电流板串口；自动在 `/dev/current_sensor`、`/dev/serial/by-id/*`、`/dev/ttyUSB*` 中探测 `$CURRENT` 数据 |
+| `current_port` | `/dev/ttyUSB1` | 电流板串口；当前阶段固定使用 `/dev/ttyUSB1` |
 | `current_baud` | `115200` | 电流板波特率 |
-| `current_open_retries` | `5` | 电流串口打开失败时的重试次数 |
-| `current_open_retry_delay` | `0.8` | 电流串口打开失败后的重试间隔，单位秒 |
+| `current_open_retries` | `3` | 电流串口打开失败时的重试次数 |
+| `current_open_retry_delay` | `1.0` | 电流串口打开失败后的重试间隔，单位秒 |
 | `require_current_before_record` | `true` | 收到第一帧有效电流后才开始写 CSV |
 | `current_wait_timeout` | `20.0` | 等待第一帧电流的最长时间，单位秒 |
 | `wheel_speed_topic` | 空 | 可选轮速话题 |
@@ -661,114 +587,31 @@ ls -la /home/wheeltec/R550PLUS_data_collect/log/
 ## 常见问题
 
 ### 1. 电流数据为空
-```bash
-rostopic echo /current_data
-ls -l /dev/ttyUSB*
-ls -l /dev/serial/by-id/
-```
 
-如果日志出现：
-
-```text
-Input/output error
-```
-
-这不是普通的端口号跳转，而是 Linux 内核/USB 串口驱动暂时无法打开设备。常见原因是 USB 串口刚枚举完成、设备被其他进程短暂占用、线缆/供电不稳、CH340/CP2102 驱动状态异常，或者 ModemManager 在后台探测串口。
-
-先执行现场排查：
+当前主流程固定使用 `/dev/ttyUSB1`。如果没有 `/current_data`：
 
 ```bash
-# 1. 看电流板到底枚举成哪个设备
+rosrun turn_on_wheeltec_robot current_reader.py _port:=/dev/ttyUSB1 _baud:=115200
+rostopic hz /current_data
+rostopic echo -n 1 /current_data
+```
+
+如果 `/dev/ttyUSB1` 报 `Input/output error`，先停止节点，再拔插电流采集板 USB，等待 3-5 秒后重试。仍不行就试 `/dev/ttyUSB2`：
+
+```bash
+rosrun turn_on_wheeltec_robot current_reader.py _port:=/dev/ttyUSB2 _baud:=115200
+```
+
+仍不行再看系统是否识别设备：
+
+```bash
 ls -l /dev/ttyUSB*
-ls -l /dev/serial/by-id/
-
-# 2. 看是否有进程占用串口
-sudo lsof /dev/ttyUSB0
-sudo lsof /dev/ttyUSB1
-
-# 3. 看内核是否反复断开/重连 USB 串口
 dmesg | tail -n 50
-
-# 4. 如果系统安装了 ModemManager，建议停止它，避免抢占串口
-sudo systemctl stop ModemManager
-sudo systemctl disable ModemManager
 ```
 
-如果仍然报错，拔插电流采集板 USB，等待 3-5 秒后再启动采集。
+哪个端口能输出 `/current_data`，采集命令里的 `current_port` 就填哪个。
 
-### 固定电流板串口别名
-
-推荐给电流采集板固定别名 `/dev/current_sensor`，之后不再依赖 `/dev/ttyUSB0` 或 `/dev/ttyUSB1`。
-
-先查看设备信息：
-
-```bash
-udevadm info -a -n /dev/ttyUSB1 | grep -E 'idVendor|idProduct|serial' | head -n 20
-```
-
-如果电流板是 CH340，常见为：
-
-```text
-ATTRS{idVendor}=="1a86"
-ATTRS{idProduct}=="7523"
-```
-
-创建 udev 规则：
-
-```bash
-sudo tee /etc/udev/rules.d/99-current-sensor.rules >/dev/null <<'EOF'
-KERNEL=="ttyUSB*", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", MODE:="0666", GROUP:="dialout", SYMLINK+="current_sensor", ENV{ID_MM_DEVICE_IGNORE}="1"
-EOF
-```
-
-如果你的 `udevadm` 查出来不是 `1a86/7523`，把上面规则里的 `idVendor` 和 `idProduct` 替换成实际值。
-
-重新加载规则：
-
-```bash
-sudo udevadm control --reload-rules
-sudo udevadm trigger
-```
-
-拔插电流采集板 USB 后确认：
-
-```bash
-ls -l /dev/current_sensor
-```
-
-之后采集推荐使用：
-
-```bash
-roslaunch turn_on_wheeltec_robot data_collector.launch \
-  current_port:=/dev/current_sensor \
-  output_dir:=/home/wheeltec/R550PLUS_data_collect/log_v2 \
-  fault_label:=0 \
-  fault_name:=normal \
-  fault_mode:=0 \
-  run_id:=normal_001 \
-  motion_mode:=straight_back_forth_0.25ms \
-  expected_rate:=20.0
-```
-
-如果 `/dev/ttyUSB0` 和 `/dev/ttyUSB1` 会跳转，优先使用自动探测：
-
-```bash
-rosrun turn_on_wheeltec_robot current_reader.py _port:=auto _baud:=115200
-```
-
-更稳定的做法是给电流采集板配置 udev 固定别名，例如 `/dev/current_sensor`，之后启动时使用：
-
-```bash
-roslaunch turn_on_wheeltec_robot data_collector.launch current_port:=/dev/current_sensor
-```
-
-临时排查时也可以手动指定当前实际端口：
-
-```bash
-roslaunch turn_on_wheeltec_robot data_collector.launch current_port:=/dev/ttyUSB1
-```
-
-### 2. 数据采集频率低
+### 2. 数据采集频率低### 2. 数据采集频率低
 当前底盘上报任务为 20Hz，控制闭环和编码器更新为 100Hz。后续可在固件中按 20Hz → 50Hz → 100Hz 逐步测试，但需要同时检查丢包率、校验错误、时间戳间隔、重复帧和 CPU 占用。
 
 ### 3. 定速巡航速度不准
@@ -823,7 +666,7 @@ turn_on_wheeltec_robot/
 ┌─────────────────────────────────────────────────────────────┐
 │  采集前准备                                                │
 │  - 机器人开机                                              │
-│  - 确认串口正常 /dev/ttyUSB0, /dev/ttyCH343USB0           │
+│  - 确认串口正常 /dev/ttyUSB1, /dev/ttyCH343USB0           │
 └─────────────────────────────────────────────────────────────┘
                             │
                             ▼
@@ -859,5 +702,9 @@ turn_on_wheeltec_robot/
 │  python create_sliding_windows.py --data_path ...           │
 │  python validate_dataset.py --data_dir ...                  │
 └─────────────────────────────────────────────────────────────┘
+
+
+
+
 
 
