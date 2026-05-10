@@ -9,8 +9,10 @@
   <arg name="web_host" default="0.0.0.0"/>
   <arg name="web_port" default="8000"/>
 
-  <arg name="current_port" default="/dev/ttyUSB0"/>
+  <arg name="current_port" default="auto"/>
   <arg name="current_baud" default="115200"/>
+  <arg name="current_open_retries" default="5"/>
+  <arg name="current_open_retry_delay" default="0.8"/>
 
   <arg name="data_output_dir" default="/home/wheeltec/R550PLUS_data_collect/log"/>
   <arg name="data_collect_rate" default="100"/>
@@ -37,6 +39,8 @@
         output="screen">
     <param name="port" value="$(arg current_port)"/>
     <param name="baud" value="$(arg current_baud)"/>
+    <param name="open_retries" value="$(arg current_open_retries)"/>
+    <param name="open_retry_delay" value="$(arg current_open_retry_delay)"/>
   </node>
 
   <node name="web_cmd_vel_adapter"

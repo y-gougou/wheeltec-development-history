@@ -165,6 +165,105 @@ current_port:=/dev/ttyUSB1
 
 如果 `current_reader` 进程已经退出，当前正在写的 CSV 不建议作为正式数据，停止采集后重新开始。
 
+### 更新后快速测试流程
+
+当电流采集板串口已经修好后，先做一轮 30 秒短测试，不要急着采正式 70 秒数据。
+
+终端 1：启动底盘。
+
+```bash
+roslaunch turn_on_wheeltec_robot turn_on_wheeltec_robot.launch
+```
+
+终端 2：启动电流读取和 CSV 采集。若已经配置 `/dev/current_sensor`，优先使用固定别名：
+
+```bash
+roslaunch turn_on_wheeltec_robot data_collector.launch \
+  current_port:=/dev/current_sensor \
+  output_dir:=/home/wheeltec/R550PLUS_data_collect/log_v2 \
+  fault_label:=0 \
+  fault_name:=normal \
+  fault_mode:=0 \
+  run_id:=normal_001 \
+  motion_mode:=straight_back_forth_0.25ms \
+  expected_rate:=20.0
+```
+
+如果暂时没有配置别名，但确认当前电流板端口可用，例如 `/dev/ttyUSB1`：
+
+```bash
+roslaunch turn_on_wheeltec_robot data_collector.launch \
+  current_port:=/dev/ttyUSB1 \
+  output_dir:=/home/wheeltec/R550PLUS_data_collect/log_v2 \
+  fault_label:=0 \
+  fault_name:=normal \
+  fault_mode:=0 \
+  run_id:=normal_001 \
+  motion_mode:=straight_back_forth_0.25ms \
+  expected_rate:=20.0
+```
+
+终端 3：启动 Web 控制，不重复启动底盘、电流和采集节点。
+
+```bash
+roslaunch turn_on_wheeltec_robot web_control.launch \
+  start_base:=false \
+  start_current_reader:=false \
+  start_data_collector:=false
+```
+
+终端 4：采集前确认各话题。
+
+```bash
+rostopic hz /odom
+rostopic hz /imu
+rostopic hz /current_data
+rostopic echo -n 1 /current_data
+```
+
+合格标准：
+
+- `/odom` 约 20Hz
+- `/imu` 约 20Hz
+- `/current_data` 有稳定输出，当前实测约 6-7Hz 也可以接受
+- `rostopic echo -n 1 /current_data` 能看到三路非长期全 0 的电流值
+
+确认通过后，在 Web 页面使用“采集测试驾驶台”：
+
+- `Vx = 0.25`
+- `Vy = 0`
+- `Wz = 0`
+- 先采 30 秒
+- 场地有限时用 `+0.25 / -0.25` 前后折返，不要转向掉头
+
+采集结束后，在终端 2 按 `Ctrl+C` 停止。然后检查最新 CSV：
+
+```bash
+ls -lt /home/wheeltec/R550PLUS_data_collect/log_v2/ | head
+tail -n 5 /home/wheeltec/R550PLUS_data_collect/log_v2/normal_001_*.csv
+```
+
+对最新生成的 CSV 执行质量检查，把文件名替换成实际最新文件：
+
+```bash
+python3 ~/ml_robot_ws/src/turn_on_wheeltec_robot/scripts/inspect_csv.py \
+  /home/wheeltec/R550PLUS_data_collect/log_v2/normal_001_YYYYMMDD_HHMMSS.csv \
+  --expected_run_id normal_001 \
+  --expected_fault_label 0 \
+  --expected_fault_name normal \
+  --expected_fault_mode 0 \
+  --expected_motion_mode straight_back_forth_0.25ms \
+  --expected_rate 20 \
+  --expected_cmd_abs 0.25
+```
+
+把以下结果发回来即可：
+
+- 终端 2 中 `Current reader:` 和 `recorded ... current_age=...` 的日志
+- `rostopic hz /current_data` 输出
+- `rostopic echo -n 1 /current_data` 输出
+- `inspect_csv.py` 完整输出
+
 ### normal_001 推荐采集流程
 
 第一版正常样本建议先采 30 秒验证链路，确认合格后再采完整 70 秒。
