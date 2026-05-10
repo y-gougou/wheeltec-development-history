@@ -49,6 +49,8 @@ class CurrentReader:
             '/dev/current_sensor,/dev/serial/by-id/*,/dev/ttyUSB0,/dev/ttyUSB1,/dev/ttyUSB2,/dev/ttyUSB3'
         )
         self.probe_timeout = float(rospy.get_param('~probe_timeout', 2.0))
+        self.open_retries = int(rospy.get_param('~open_retries', 5))
+        self.open_retry_delay = float(rospy.get_param('~open_retry_delay', 0.8))
 
         # Publisher
         self.pub = rospy.Publisher('/current_data', Float32MultiArray, queue_size=10)
@@ -85,11 +87,28 @@ class CurrentReader:
         return ports
 
     def open_serial(self, port, timeout=None):
-        return serial.Serial(
-            port=port,
-            baudrate=self.baud,
-            timeout=self.timeout if timeout is None else timeout
-        )
+        last_error = None
+        attempts = max(1, self.open_retries)
+        for attempt in range(1, attempts + 1):
+            try:
+                return serial.Serial(
+                    port=port,
+                    baudrate=self.baud,
+                    timeout=self.timeout if timeout is None else timeout
+                )
+            except serial.SerialException as e:
+                last_error = e
+                if attempt < attempts and not rospy.is_shutdown():
+                    rospy.logwarn(
+                        "Open serial %s failed (%d/%d): %s; retrying in %.1fs",
+                        port,
+                        attempt,
+                        attempts,
+                        e,
+                        self.open_retry_delay,
+                    )
+                    rospy.sleep(self.open_retry_delay)
+        raise last_error
 
     def probe_current_port(self, port):
         """Return an opened serial handle if a port is sending valid CURRENT frames."""

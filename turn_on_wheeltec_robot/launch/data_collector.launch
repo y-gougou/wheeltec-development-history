@@ -7,6 +7,8 @@
     <arg name="output_dir" default="/home/wheeltec/R550PLUS_data_collect/log" />
     <arg name="current_port" default="auto" />
     <arg name="current_baud" default="115200" />
+    <arg name="current_open_retries" default="5" />
+    <arg name="current_open_retry_delay" default="0.8" />
     <arg name="wheel_speed_topic" default="" />
     <arg name="expected_rate" default="20.0" />
 
@@ -14,9 +16,12 @@
           pkg="turn_on_wheeltec_robot"
           type="current_reader.py"
           output="screen"
-          respawn="false">
+          respawn="false"
+          required="true">
         <param name="port" value="$(arg current_port)" />
         <param name="baud" value="$(arg current_baud)" />
+        <param name="open_retries" value="$(arg current_open_retries)" />
+        <param name="open_retry_delay" value="$(arg current_open_retry_delay)" />
         <param name="frame_id" value="current_sensor" />
     </node>
 

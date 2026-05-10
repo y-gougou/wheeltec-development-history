@@ -445,6 +445,8 @@ odom_age,imu_age,voltage_age,current_age,cmd_age,record_rate,current_valid
 | `output_dir` | `/home/wheeltec/R550PLUS_data_collect/log` | CSV 输出目录 |
 | `current_port` | `auto` | 电流板串口；自动在 `/dev/current_sensor`、`/dev/serial/by-id/*`、`/dev/ttyUSB*` 中探测 `$CURRENT` 数据 |
 | `current_baud` | `115200` | 电流板波特率 |
+| `current_open_retries` | `5` | 电流串口打开失败时的重试次数 |
+| `current_open_retry_delay` | `0.8` | 电流串口打开失败后的重试间隔，单位秒 |
 | `wheel_speed_topic` | 空 | 可选轮速话题 |
 
 ### data_collector.py
@@ -526,6 +528,90 @@ rostopic echo /current_data
 ls -l /dev/ttyUSB*
 ls -l /dev/serial/by-id/
 ```
+
+如果日志出现：
+
+```text
+Input/output error
+```
+
+这不是普通的端口号跳转，而是 Linux 内核/USB 串口驱动暂时无法打开设备。常见原因是 USB 串口刚枚举完成、设备被其他进程短暂占用、线缆/供电不稳、CH340/CP2102 驱动状态异常，或者 ModemManager 在后台探测串口。
+
+先执行现场排查：
+
+```bash
+# 1. 看电流板到底枚举成哪个设备
+ls -l /dev/ttyUSB*
+ls -l /dev/serial/by-id/
+
+# 2. 看是否有进程占用串口
+sudo lsof /dev/ttyUSB0
+sudo lsof /dev/ttyUSB1
+
+# 3. 看内核是否反复断开/重连 USB 串口
+dmesg | tail -n 50
+
+# 4. 如果系统安装了 ModemManager，建议停止它，避免抢占串口
+sudo systemctl stop ModemManager
+sudo systemctl disable ModemManager
+```
+
+如果仍然报错，拔插电流采集板 USB，等待 3-5 秒后再启动采集。
+
+### 固定电流板串口别名
+
+推荐给电流采集板固定别名 `/dev/current_sensor`，之后不再依赖 `/dev/ttyUSB0` 或 `/dev/ttyUSB1`。
+
+先查看设备信息：
+
+```bash
+udevadm info -a -n /dev/ttyUSB1 | grep -E 'idVendor|idProduct|serial' | head -n 20
+```
+
+如果电流板是 CH340，常见为：
+
+```text
+ATTRS{idVendor}=="1a86"
+ATTRS{idProduct}=="7523"
+```
+
+创建 udev 规则：
+
+```bash
+sudo tee /etc/udev/rules.d/99-current-sensor.rules >/dev/null <<'EOF'
+KERNEL=="ttyUSB*", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", MODE:="0666", GROUP:="dialout", SYMLINK+="current_sensor", ENV{ID_MM_DEVICE_IGNORE}="1"
+EOF
+```
+
+如果你的 `udevadm` 查出来不是 `1a86/7523`，把上面规则里的 `idVendor` 和 `idProduct` 替换成实际值。
+
+重新加载规则：
+
+```bash
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
+
+拔插电流采集板 USB 后确认：
+
+```bash
+ls -l /dev/current_sensor
+```
+
+之后采集推荐使用：
+
+```bash
+roslaunch turn_on_wheeltec_robot data_collector.launch \
+  current_port:=/dev/current_sensor \
+  output_dir:=/home/wheeltec/R550PLUS_data_collect/log_v2 \
+  fault_label:=0 \
+  fault_name:=normal \
+  fault_mode:=0 \
+  run_id:=normal_001 \
+  motion_mode:=straight_back_forth_0.25ms \
+  expected_rate:=20.0
+```
+
 如果 `/dev/ttyUSB0` 和 `/dev/ttyUSB1` 会跳转，优先使用自动探测：
 
 ```bash
