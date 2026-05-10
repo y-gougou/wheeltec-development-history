@@ -89,6 +89,7 @@ class DataCollector(object):
         self.current_topic = rospy.get_param("~current_topic", "/current_data")
         self.cmd_topic = rospy.get_param("~cmd_topic", "/cmd_vel")
         self.wheel_speed_topic = rospy.get_param("~wheel_speed_topic", "")
+        self.expected_rate = float(rospy.get_param("~expected_rate", 20.0))
 
         if not self.run_id:
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -96,6 +97,7 @@ class DataCollector(object):
 
         self.sample_id = 0
         self.current_seq = -1
+        self.current_rx_seq = -1
         self.last_record_wall_time = None
         self.csv_file = None
         self.csv_writer = None
@@ -119,11 +121,12 @@ class DataCollector(object):
         self._setup_subscribers()
 
         rospy.loginfo(
-            "data_collector started: run_id=%s label=%d/%s mode=%s",
+            "data_collector started: run_id=%s label=%d/%s mode=%s expected_rate=%.1fHz",
             self.run_id,
             self.fault_label,
             self.fault_name,
             self.motion_mode,
+            self.expected_rate,
         )
 
     def _setup_subscribers(self):
@@ -148,6 +151,11 @@ class DataCollector(object):
 
         filename = "%s.csv" % self.run_id
         filepath = os.path.join(self.output_dir, filename)
+        if os.path.exists(filepath):
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = "%s_%s.csv" % (self.run_id, stamp)
+            filepath = os.path.join(self.output_dir, filename)
+            rospy.logwarn("CSV exists, writing to new file: %s", filepath)
         self.csv_file = open(filepath, "w")
         self.csv_writer = csv.DictWriter(self.csv_file, fieldnames=self.CSV_FIELDS)
         self.csv_writer.writeheader()
@@ -186,6 +194,13 @@ class DataCollector(object):
         self.latest["current"] = msg
         self.latest["current_time"] = rospy.Time.now().to_sec()
         self.current_seq += 1
+        if len(msg.data) >= 4:
+            try:
+                self.current_rx_seq = int(msg.data[3])
+            except (TypeError, ValueError):
+                self.current_rx_seq = self.current_seq
+        else:
+            self.current_rx_seq = self.current_seq
 
     def _cmd_callback(self, msg):
         self.latest["cmd"] = msg
@@ -242,7 +257,7 @@ class DataCollector(object):
             "imu_gy": self._fmt(imu.angular_velocity.y if imu else 0.0),
             "imu_gz": self._fmt(imu.angular_velocity.z if imu else 0.0),
             "voltage": self._fmt(voltage.data if voltage else 0.0, 4),
-            "current_seq": self.current_seq,
+            "current_seq": self.current_rx_seq,
             "current0": self._fmt(current_values[0] if len(current_values) > 0 else 0.0, 4),
             "current1": self._fmt(current_values[1] if len(current_values) > 1 else 0.0, 4),
             "current2": self._fmt(current_values[2] if len(current_values) > 2 else 0.0, 4),

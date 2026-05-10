@@ -8,6 +8,7 @@
     <arg name="current_port" default="/dev/ttyUSB0" />
     <arg name="current_baud" default="115200" />
     <arg name="wheel_speed_topic" default="" />
+    <arg name="expected_rate" default="20.0" />
 
     <node name="current_reader"
           pkg="turn_on_wheeltec_robot"
@@ -31,5 +32,6 @@
         <param name="motion_mode" value="$(arg motion_mode)" />
         <param name="output_dir" value="$(arg output_dir)" />
         <param name="wheel_speed_topic" value="$(arg wheel_speed_topic)" />
+        <param name="expected_rate" value="$(arg expected_rate)" />
     </node>
 </launch>

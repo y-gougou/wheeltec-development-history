@@ -11,6 +11,7 @@ import json
 import os
 import pickle
 from collections import Counter, defaultdict
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -135,6 +136,12 @@ def clean_dataframe(df, features):
 
 def split_runs(df, test_ratio, explicit_test_runs):
     runs = sorted(df["run_id"].astype(str).unique())
+    if len(runs) < 2 and not explicit_test_runs:
+        raise RuntimeError(
+            "only %d run found (%s); collect at least two independent runs or pass --test_runs. "
+            "Do not create train/test splits from overlapping windows in one run."
+            % (len(runs), ", ".join(runs))
+        )
     if explicit_test_runs:
         test_runs = sorted(set(explicit_test_runs))
     else:
@@ -239,6 +246,21 @@ def validate_arrays(name, x, y):
     print("%s: X=%s y=%s labels=%s" % (name, x.shape, y.shape, dict(Counter(y.tolist()))))
 
 
+def infer_sample_rate(df):
+    if "timestamp" not in df.columns:
+        return None
+    rates = []
+    for _, run_df in df.groupby("run_id"):
+        ts = pd.to_numeric(run_df["timestamp"], errors="coerce").dropna().values
+        if len(ts) >= 2:
+            duration = ts[-1] - ts[0]
+            if duration > 0:
+                rates.append((len(ts) - 1) / duration)
+    if not rates:
+        return None
+    return float(np.mean(rates))
+
+
 def save_outputs(output_dir, result):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -273,6 +295,7 @@ def main():
     df, paths = load_csvs(args.input_dir, args.pattern)
     features = choose_features(df, args.include_wheel_speed)
     df = clean_dataframe(df, features)
+    inferred_sample_rate = infer_sample_rate(df)
 
     explicit_test_runs = [x.strip() for x in args.test_runs.split(",") if x.strip()]
     train_runs, test_runs = split_runs(df, args.test_ratio, explicit_test_runs)
@@ -303,8 +326,13 @@ def main():
         "input_shape": ["num_samples", len(features), args.window_size],
         "window_size": args.window_size,
         "step_size": args.step_size,
+        "scaler_type": args.scaler,
         "scaler": args.scaler,
+        "sample_rate": inferred_sample_rate,
+        "inferred_sample_rate": inferred_sample_rate,
+        "label_map": LABEL_NAMES,
         "label_names": LABEL_NAMES,
+        "created_time": datetime.now().isoformat(),
         "source_files": [os.path.basename(p) for p in paths],
         "train_runs": train_runs,
         "test_runs": test_runs,
