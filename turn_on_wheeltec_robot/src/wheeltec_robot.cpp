@@ -578,10 +578,3 @@ turn_on_robot::~turn_on_robot()
   Stm32_Serial.close(); //Close the serial port //关闭串口  
   ROS_INFO_STREAM("Shutting down"); //Prompt message //提示信息
 }
-  catch (serial::IOException& e)   
-  {
-    ROS_ERROR_STREAM("Unable to send data through serial port"); //If sending data fails, an error message is printed //如果发送数据失败,打印错误信息
-  }
-  Stm32_Serial.close(); //Close the serial port //关闭串口  
-  ROS_INFO_STREAM("Shutting down"); //Prompt message //提示信息
-}
