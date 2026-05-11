@@ -18,9 +18,6 @@ import pandas as pd
 
 
 DEFAULT_FEATURES = [
-    "cmd_vx",
-    "cmd_vy",
-    "cmd_wz",
     "odom_vx",
     "odom_vy",
     "odom_wz",
@@ -30,13 +27,11 @@ DEFAULT_FEATURES = [
     "imu_gx",
     "imu_gy",
     "imu_gz",
-    "voltage",
     "current0",
     "current1",
     "current2",
 ]
 
-WHEEL_SPEED_FEATURES = ["wheel_speed0", "wheel_speed1", "wheel_speed2"]
 LABEL_NAMES = {
     0: "normal",
     1: "drive_fault",
@@ -93,17 +88,8 @@ def load_csvs(input_dir, pattern):
     return pd.concat(frames, ignore_index=True), paths
 
 
-def choose_features(df, include_wheel_speed):
+def choose_features(df):
     features = list(DEFAULT_FEATURES)
-    if include_wheel_speed == "auto":
-        use_wheel = all(col in df.columns for col in WHEEL_SPEED_FEATURES)
-        if use_wheel:
-            total_abs = df[WHEEL_SPEED_FEATURES].abs().sum().sum()
-            use_wheel = bool(total_abs > 1e-9)
-    else:
-        use_wheel = include_wheel_speed == "yes"
-    if use_wheel:
-        features.extend(WHEEL_SPEED_FEATURES)
 
     missing = [col for col in features if col not in df.columns]
     if missing:
@@ -289,11 +275,10 @@ def main():
     parser.add_argument("--scaler", choices=["standard", "minmax"], default="standard")
     parser.add_argument("--test_ratio", type=float, default=0.2)
     parser.add_argument("--test_runs", default="")
-    parser.add_argument("--include_wheel_speed", choices=["auto", "yes", "no"], default="auto")
     args = parser.parse_args()
 
     df, paths = load_csvs(args.input_dir, args.pattern)
-    features = choose_features(df, args.include_wheel_speed)
+    features = choose_features(df)
     df = clean_dataframe(df, features)
     inferred_sample_rate = infer_sample_rate(df)
 
@@ -318,10 +303,9 @@ def main():
     feature_config = {
         "features": features,
         "feature_groups": {
-            "cmd_odom": [c for c in features if c.startswith("cmd_") or c.startswith("odom_")],
+            "odom": [c for c in features if c.startswith("odom_")],
             "imu": [c for c in features if c.startswith("imu_")],
-            "electrical": [c for c in features if c == "voltage" or c.startswith("current")],
-            "wheel_speed": [c for c in features if c.startswith("wheel_speed")],
+            "current": [c for c in features if c.startswith("current")],
         },
         "input_shape": ["num_samples", len(features), args.window_size],
         "window_size": args.window_size,

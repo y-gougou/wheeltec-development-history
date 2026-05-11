@@ -28,7 +28,7 @@ class CurrentReader(object):
     def __init__(self):
         rospy.init_node("current_reader", anonymous=True)
 
-        self.port = rospy.get_param("~port", "/dev/ttyUSB1")
+        self.port = rospy.get_param("~port", "/dev/ttyUSB0")
         self.baud = int(rospy.get_param("~baud", 115200))
         self.timeout = float(rospy.get_param("~timeout", 0.05))
         self.open_retries = int(rospy.get_param("~open_retries", 3))

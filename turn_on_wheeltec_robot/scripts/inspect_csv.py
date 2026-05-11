@@ -43,6 +43,7 @@ EXPECTED_FIELDS = [
     "imu_time",
     "voltage_time",
     "current_time",
+    "current_dt",
     "cmd_time",
     "odom_age",
     "imu_age",
@@ -51,6 +52,7 @@ EXPECTED_FIELDS = [
     "cmd_age",
     "record_rate",
     "current_valid",
+    "current_reused_count",
 ]
 
 NUMERIC_COLUMNS = [
@@ -82,6 +84,7 @@ NUMERIC_COLUMNS = [
     "imu_time",
     "voltage_time",
     "current_time",
+    "current_dt",
     "cmd_time",
     "odom_age",
     "imu_age",
@@ -90,6 +93,7 @@ NUMERIC_COLUMNS = [
     "cmd_age",
     "record_rate",
     "current_valid",
+    "current_reused_count",
 ]
 
 
@@ -209,13 +213,15 @@ def inspect(path, args):
     unique_report(df, "motion_mode", args.expected_motion_mode, warnings)
 
     print("")
-    for col in ["cmd_age", "odom_age", "imu_age", "voltage_age", "current_age"]:
+    for col in ["cmd_age", "odom_age", "imu_age", "voltage_age", "current_age", "current_dt"]:
         values = finite_values(df, col)
         print_stats(col, values)
         if col == "cmd_age" and len(values) > 0 and values.mean() > args.max_cmd_age:
             warn(warnings, "cmd_age mean %.3fs is high" % values.mean())
         if col == "current_age" and len(values) > 0 and values.mean() > args.max_current_age:
             warn(warnings, "current_age mean %.3fs is high" % values.mean())
+        if col == "current_dt" and len(values) > 0 and values.mean() > args.max_current_age:
+            warn(warnings, "current_dt mean %.3fs is high" % values.mean())
 
     print("")
     print("cmd describe:")
@@ -239,6 +245,16 @@ def inspect(path, args):
         print("current_valid ratio: %.3f" % valid_ratio)
         if valid_ratio < 0.95:
             warn(warnings, "current_valid ratio %.3f is low" % valid_ratio)
+
+    current_reused = finite_values(df, "current_reused_count")
+    if len(current_reused) > 0:
+        print_stats("current_reused_count", current_reused)
+        if current_reused.max() > args.max_current_reused:
+            warn(
+                warnings,
+                "current_reused_count max %.0f exceeds %d"
+                % (current_reused.max(), args.max_current_reused),
+            )
 
     cmd_vx = finite_values(df, "cmd_vx")
     if len(cmd_vx) > 0 and (cmd_vx.abs() > 0.1).sum() == 0:
@@ -281,6 +297,7 @@ def main():
     parser.add_argument("--dt_tolerance", type=float, default=0.01)
     parser.add_argument("--max_cmd_age", type=float, default=0.20)
     parser.add_argument("--max_current_age", type=float, default=0.35)
+    parser.add_argument("--max_current_reused", type=int, default=3)
     parser.add_argument("--expected_cmd_abs", type=float, default=0.25)
     parser.add_argument("--cmd_tolerance", type=float, default=0.20)
     parser.add_argument("--max_straight_cmd_wz", type=float, default=0.10)
