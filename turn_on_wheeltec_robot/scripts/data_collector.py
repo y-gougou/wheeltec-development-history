@@ -61,6 +61,7 @@ class DataCollector(object):
         "imu_time",
         "voltage_time",
         "current_time",
+        "current_dt",
         "cmd_time",
         "odom_age",
         "imu_age",
@@ -69,6 +70,7 @@ class DataCollector(object):
         "cmd_age",
         "record_rate",
         "current_valid",
+        "current_reused_count",
     ]
 
     def __init__(self):
@@ -102,10 +104,15 @@ class DataCollector(object):
         self.sample_id = 0
         self.current_seq = -1
         self.current_rx_seq = -1
+        self.last_recorded_current_seq = -1
+        self.current_reused_count = 0
         self.last_record_wall_time = None
+        self.last_flush_wall_time = None
         self.csv_file = None
         self.csv_writer = None
         self.is_shutting_down = False
+        self.flush_every_rows = int(rospy.get_param("~flush_every_rows", 20))
+        self.flush_interval = float(rospy.get_param("~flush_interval", 1.0))
 
         self.latest = {
             "odom": None,
@@ -184,6 +191,8 @@ class DataCollector(object):
         self.csv_file = open(filepath, "w")
         self.csv_writer = csv.DictWriter(self.csv_file, fieldnames=self.CSV_FIELDS)
         self.csv_writer.writeheader()
+        self.csv_file.flush()
+        self.last_flush_wall_time = rospy.Time.now().to_sec()
         rospy.loginfo("CSV output: %s", filepath)
 
     @staticmethod
@@ -201,6 +210,11 @@ class DataCollector(object):
         if topic_time is None:
             return ""
         return self._fmt(max(0.0, now - topic_time))
+
+    def _time_delta(self, base_time, topic_time):
+        if topic_time is None:
+            return ""
+        return self._fmt(max(0.0, base_time - topic_time))
 
     def _odom_callback(self, msg):
         if self.is_shutting_down:
@@ -262,6 +276,16 @@ class DataCollector(object):
 
         current_values = list(current.data) if current is not None else []
         wheel_values = list(wheel_speed.data) if wheel_speed is not None else []
+        current_valid = len(current_values) >= 3
+
+        if current_valid:
+            if self.current_rx_seq == self.last_recorded_current_seq:
+                self.current_reused_count += 1
+            else:
+                self.current_reused_count = 0
+                self.last_recorded_current_seq = self.current_rx_seq
+        else:
+            self.current_reused_count = 0
 
         row = {
             "timestamp": self._fmt(timestamp),
@@ -295,6 +319,7 @@ class DataCollector(object):
             "imu_time": self._fmt(self.latest["imu_time"] or timestamp),
             "voltage_time": self._fmt(self.latest["voltage_time"] or timestamp),
             "current_time": self._fmt(self.latest["current_time"] or timestamp),
+            "current_dt": self._time_delta(timestamp, self.latest["current_time"]),
             "cmd_time": self._fmt(self.latest["cmd_time"] or timestamp),
             "odom_age": self._age(wall_now, self.latest["odom_time"]),
             "imu_age": self._age(wall_now, self.latest["imu_time"]),
@@ -302,20 +327,36 @@ class DataCollector(object):
             "current_age": self._age(wall_now, self.latest["current_time"]),
             "cmd_age": self._age(wall_now, self.latest["cmd_time"]),
             "record_rate": self._fmt(record_rate, 3),
-            "current_valid": 1 if len(current_values) >= 3 else 0,
+            "current_valid": 1 if current_valid else 0,
+            "current_reused_count": self.current_reused_count,
         }
 
         self.csv_writer.writerow(row)
-        self.csv_file.flush()
         self.sample_id += 1
+        self._flush_if_needed(wall_now)
 
         if self.sample_id % 500 == 0:
             rospy.loginfo(
-                "recorded %d rows, rate=%.1f Hz, current_age=%s",
+                "recorded %d rows, rate=%.1f Hz, current_age=%s, current_dt=%s, current_reused=%d",
                 self.sample_id,
                 record_rate,
                 row["current_age"],
+                row["current_dt"],
+                self.current_reused_count,
             )
+
+    def _flush_if_needed(self, wall_now):
+        if self.csv_file is None:
+            return
+        rows_due = self.flush_every_rows > 0 and self.sample_id % self.flush_every_rows == 0
+        time_due = (
+            self.flush_interval > 0.0
+            and self.last_flush_wall_time is not None
+            and wall_now - self.last_flush_wall_time >= self.flush_interval
+        )
+        if rows_due or time_due:
+            self.csv_file.flush()
+            self.last_flush_wall_time = wall_now
 
     def shutdown(self):
         self.is_shutting_down = True
