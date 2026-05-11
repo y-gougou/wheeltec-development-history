@@ -44,61 +44,61 @@ Date: January 28, 2021
 Function: The speed topic subscription Callback function, according to the subscribed instructions through the serial port command control of the lower computer
 功能: 速度话题订阅回调函数Callback，根据订阅的指令通过串口发指令控制下位机
 ***************************************/
-void turn_on_robot::Cmd_Vel_Callback(const geometry_msgs::Twist &twist_aux)
+void turn_on_robot::Send_Chassis_Command(float vx, float vy, float wz, unsigned char angle_flag, float angle_deg)
 {
-  short  transition;  //intermediate variable //中间变量
+  short transition;
 
-  Send_Data.tx[0]=FRAME_HEADER; //frame head 0x7B //帧头0X7B
-  Send_Data.tx[1] = 0; //set aside //预留位
-  Send_Data.tx[2] = 0; //set aside //预留位
+  Send_Data.tx[0]=FRAME_HEADER;
+  Send_Data.tx[1]=0;
+  Send_Data.tx[2]=angle_flag;
 
-  //The target velocity of the X-axis of the robot
-  //机器人x轴的目标线速度
-  transition=0;
-  transition = twist_aux.linear.x*1000; //将浮点数放大一千倍，简化传输
-  Send_Data.tx[4] = transition;     //取数据的低8位
-  Send_Data.tx[3] = transition>>8;  //取数据的高8位
+  transition = (short)(vx*1000);
+  Send_Data.tx[4] = transition;
+  Send_Data.tx[3] = transition>>8;
 
-  //The target velocity of the Y-axis of the robot
-  //机器人y轴的目标线速度
-  transition=0;
-  transition = twist_aux.linear.y*1000;
+  transition = (short)(vy*1000);
   Send_Data.tx[6] = transition;
   Send_Data.tx[5] = transition>>8;
 
-  //The target angular velocity of the robot's Z axis
-  //机器人z轴的目标角速度
-  transition=0;
-  transition = twist_aux.angular.z*1000;
+  transition = (short)(wz*1000);
   Send_Data.tx[8] = transition;
   Send_Data.tx[7] = transition>>8;
 
-  //The target angle for angle closed-loop control (unit: 0.1 degree)
-  //角度闭环控制的目标角度（单位：0.1度）
-  transition=0;
-  transition = (short)(target_angle * 10); //Convert degrees to 0.1 degree units
-  Send_Data.tx[10] = transition;     //取数据的低8位
-  Send_Data.tx[9] = transition>>8;   //取数据的高8位
+  transition = (short)(angle_deg*10);
+  Send_Data.tx[10] = transition;
+  Send_Data.tx[9] = transition>>8;
 
-  Send_Data.tx[11]=Check_Sum(11,SEND_DATA_CHECK); //For the BCC check bits, see the Check_Sum function //BCC校验位，规则参见Check_Sum函数
-  Send_Data.tx[12]=FRAME_TAIL; //frame tail 0x7D //帧尾0X7D
+  Send_Data.tx[11]=Check_Sum(11,SEND_DATA_CHECK);
+  Send_Data.tx[12]=FRAME_TAIL;
+
   try
   {
-    Stm32_Serial.write(Send_Data.tx,sizeof (Send_Data.tx)); //Sends data to the downloader via serial port //通过串口向下位机发送数据 
+    Stm32_Serial.write(Send_Data.tx,sizeof(Send_Data.tx));
   }
-  catch (serial::IOException& e)   
+  catch (serial::IOException& e)
   {
-    ROS_ERROR_STREAM("Unable to send data through serial port"); //If sending data fails, an error message is printed //如果发送数据失败，打印错误信息
+    ROS_ERROR_STREAM("Unable to send data through serial port");
   }
 }
-/**************************************
-Function: The angle topic subscription Callback function
-功能: 角度话题订阅回调函数
-***************************************/
+
+void turn_on_robot::Cmd_Vel_Callback(const geometry_msgs::Twist &twist_aux)
+{
+  Send_Chassis_Command(twist_aux.linear.x, twist_aux.linear.y, twist_aux.angular.z, 0, target_angle);
+}
+
 void turn_on_robot::Angle_Callback(const std_msgs::Float32 &angle_msg)
 {
-  target_angle = angle_msg.data; //Update target angle //更新目标角度
+  target_angle = angle_msg.data;
+  Send_Chassis_Command(0.0f, 0.0f, 0.0f, 1, target_angle);
 }
+
+void turn_on_robot::Angle_Reset_Callback(const std_msgs::Empty &reset_msg)
+{
+  (void)reset_msg;
+  target_angle = 0.0f;
+  Send_Chassis_Command(0.0f, 0.0f, 0.0f, 2, 0.0f);
+}
+
 /**************************************
 Date: January 28, 2021
 Function: Publish the IMU data topic
@@ -514,6 +514,7 @@ turn_on_robot::turn_on_robot():Sampling_Time(0),Power_voltage(0),target_angle(0)
   //Set the angle control command callback function
   //角度控制命令订阅回调函数设置
   Angle_Sub       = n.subscribe("target_angle", 10, &turn_on_robot::Angle_Callback, this);
+  Angle_Reset_Sub = n.subscribe("target_angle_reset", 10, &turn_on_robot::Angle_Reset_Callback, this);
 
   ROS_INFO_STREAM("Data ready"); //Prompt message //提示信息
   

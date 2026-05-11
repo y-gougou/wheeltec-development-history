@@ -18,6 +18,7 @@
 #include <tf/transform_broadcaster.h>
 #include <std_msgs/String.h>
 #include <std_msgs/Float32.h>
+#include <std_msgs/Empty.h>
 #include <nav_msgs/Odometry.h>
 #include <geometry_msgs/Pose.h>
 #include <geometry_msgs/Vector3.h>
@@ -143,10 +144,12 @@ class turn_on_robot
 		//The speed topic subscribes to the callback function
 		//速度话题订阅回调函数
 		void Cmd_Vel_Callback(const geometry_msgs::Twist &twist_aux);              
+		void Send_Chassis_Command(float vx, float vy, float wz, unsigned char angle_flag, float angle_deg);
 		//The angle topic subscribes to the callback function
 		//角度话题订阅回调函数
 		void Angle_Callback(const std_msgs::Float32 &angle_msg);
-		ros::Subscriber Angle_Sub; //Initialize the angle topic subscriber //初始化角度话题订阅者
+		void Angle_Reset_Callback(const std_msgs::Empty &reset_msg);
+		ros::Subscriber Angle_Sub, Angle_Reset_Sub; //Initialize the angle topic subscriber //初始化角度话题订阅者
 
 		ros::Publisher odom_publisher, imu_publisher, voltage_publisher; //Initialize the topic publisher //初始化话题发布者
 		void Publish_Odom();      //Pub the speedometer topic //发布里程计话题

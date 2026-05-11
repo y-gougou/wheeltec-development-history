@@ -106,6 +106,7 @@ class StaticDashboardServer(object):
         self.data_dir = rospy.get_param("~data_dir", "/home/wheeltec/R550PLUS_data_collect/log")
         self.package_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.web_root = os.path.join(self.package_root, "web")
+        self.dist_root = os.path.join(self.web_root, "dist")
 
         if not os.path.isdir(self.web_root):
             raise RuntimeError("Web root does not exist: %s" % self.web_root)
@@ -114,7 +115,7 @@ class StaticDashboardServer(object):
         self.server_thread = None
 
     def start(self):
-        os.chdir(self.web_root)
+        os.chdir(self.dist_root if os.path.isdir(self.dist_root) else self.web_root)
         self.server = ReusableTCPServer((self.host, self.port), DashboardHandler)
         self.server.data_dir = self.data_dir
         self.server_thread = threading.Thread(target=self.server.serve_forever)
@@ -123,7 +124,7 @@ class StaticDashboardServer(object):
         rospy.on_shutdown(self.shutdown)
         rospy.loginfo(
             "web dashboard started http://%s:%d (web=%s, data=%s)",
-            self.host, self.port, self.web_root, self.data_dir,
+            self.host, self.port, os.getcwd(), self.data_dir,
         )
 
     def shutdown(self):
