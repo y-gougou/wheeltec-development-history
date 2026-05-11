@@ -32,7 +32,7 @@ using namespace std;
 #define FRAME_HEADER      0X7B       //Frame head //帧头
 #define FRAME_TAIL        0X7D       //Frame tail //帧尾
 #define RECEIVE_DATA_SIZE 24         //The length of the data sent by the lower computer //下位机发送过来的数据的长度
-#define SEND_DATA_SIZE    11         //The length of data sent by ROS to the lower machine //ROS向下位机发送的数据的长度
+#define SEND_DATA_SIZE    13         //The length of data sent by ROS to the lower machine //ROS向下位机发送的数据的长度 (extended for target angle)
 #define PI 				  3.1415926f //PI //圆周率
 
 //Relative to the range set by the IMU gyroscope, the range is ±500°, corresponding data range is ±32768
@@ -143,6 +143,10 @@ class turn_on_robot
 		//The speed topic subscribes to the callback function
 		//速度话题订阅回调函数
 		void Cmd_Vel_Callback(const geometry_msgs::Twist &twist_aux);              
+		//The angle topic subscribes to the callback function
+		//角度话题订阅回调函数
+		void Angle_Callback(const std_msgs::Float32 &angle_msg);
+		ros::Subscriber Angle_Sub; //Initialize the angle topic subscriber //初始化角度话题订阅者
 
 		ros::Publisher odom_publisher, imu_publisher, voltage_publisher; //Initialize the topic publisher //初始化话题发布者
 		void Publish_Odom();      //Pub the speedometer topic //发布里程计话题
@@ -167,5 +171,6 @@ class turn_on_robot
         MPU6050_DATA Mpu6050_Data; //IMU data //IMU数据
         float Power_voltage;       //Power supply voltage //电源电压
         float odom_x_scale, odom_y_scale, odom_z_scale_positive, odom_z_scale_negative;       //Odometer correction parameters //里程计修正参数
+        float target_angle;        //Target angle for angle closed-loop control (unit: degree) //角度闭环控制的目标角度（单位：度）
 };
 #endif

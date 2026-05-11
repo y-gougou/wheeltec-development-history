@@ -1,138 +1,195 @@
-# R550PLUS 故障诊断数据采集说明
+﻿# R550PLUS 三全向轮机器人 ROS 包
 
-本文档只保留当前阶段需要的流程：先采到可用、规范、可靠的二分类数据集。暂时不训练复杂模型，不修改底盘 24 字节协议，不加入轮速字段作为模型输入。
+## 概述
 
-## 当前目标
+`turn_on_wheeltec_robot` 包含两条可并行使用的能力：
 
-第一版只做二分类：
+- **传感器数据采集**：13通道底盘数据 + 3通道电流数据，支持 CSV 采集和故障标签
+- **Web 控制 + 定速巡航**：浏览器控制机器人，支持 PID 闭环巡航定速
 
-| fault_label | fault_name | 说明 |
-| --- | --- | --- |
-| 0 | normal | 正常运行 |
-| 1 | drive_fault | 驱动异常 |
+---
 
-标准采集链路：
+## 数据来源
 
-```text
-底盘固件 DATA_task 20Hz
-  -> wheeltec_robot.cpp
-  -> /odom /imu /PowerVoltage
+本系统有 **两个独立串口数据源**：
 
-电流采集板约 86Hz 实测
-  -> current_reader.py
-  -> /current_data
+| 数据源 | 串口 | 话题 | 通道数 | 频率 |
+|--------|------|------|--------|------|
+| 底盘控制器 | `/dev/ttyCH343USB0` | `/odom`, `/imu`, `/PowerVoltage` | 13通道 | 20Hz |
+| 电流传感器 | `auto`，建议固定为 `/dev/current_sensor` | `/current_data` | 3通道 | 以实测为准 |
 
-data_collector.py
-  -> 以 /odom 触发，20Hz 写 CSV
-  -> 其他话题使用最新缓存值
+**内部采样频率**：IMU 芯片 MPU6050 内部采样 100Hz，但 ROS 发布频率为 20Hz。
 
-build_fault_dataset.py
-  -> 按 run_id 划分训练/测试
-  -> 生成 X_train.npy / y_train.npy / X_test.npy / y_test.npy
+**13通道底盘数据**：
+- 位置：x, y, z（里程计）
+- 速度：vx, vy, vz
+- 加速度：ax, ay, az（IMU）
+- 角速度：gx, gy, gz（IMU）
+- 电压：voltage
+
+**3通道电流数据**：
+- current0, current1, current2
+
+---
+
+## 系统结构
+
+```
+串口设备 1 (ttyCH343USB0)          串口设备 2 (current_sensor/ttyUSB*)
+        │                                    │
+        ▼                                    ▼
+┌───────────────┐                  ┌─────────────────┐
+│wheeltec_robot │                  │ current_reader  │
+│    _node      │                  │      .py        │
+│    (C++)      │                  └────────┬────────┘
+└───────┬───────┘                           │
+        │  /odom /imu /PowerVoltage         │  /current_data
+        └───────────────────┬───────────────┘
+                            │
+                   ┌────────▼────────┐
+                   │ data_collector  │
+                   │      .py        │
+                   │ /odom触发写CSV   │
+                   │ 最新值缓存填充   │
+                   └─────────────────┘
+
+浏览器 WebSocket
+        │
+        ▼
+  rosbridge_websocket (ws://0.0.0.0:9090)
+        │
+        ▼
+  /cmd_vel_web + /web/cruise_cmd + /web/cruise_enable + /web/heartbeat + /web/estop
+        │
+        ▼
+  cmd_vel_web_adapter.py (安全保护 + PID巡航)
+        │
+        ▼
+      /cmd_vel → wheeltec_robot_node
 ```
 
-当前实测电流话题：
+---
 
-```text
-/current_data average rate: about 86Hz
-parse_error=0
-checksum_error=0
+## 故障标签说明
+
+| 标签 | 名称 | 说明 |
+|------|------|------|
+| 0 | normal | 正常状态 |
+| 1 | drive_fault | 驱动异常（单轮堵转） |
+| 2 | wheel_slip | 轮子打滑/损坏 |
+| 3 | shaft_eccentric | 电机轴偏心 |
+
+---
+
+## 数据采集启动方式
+
+采集时建议三个终端分开启动，避免底盘节点、电流读取节点和 Web 控制节点重复启动。
+
+```bash
+# 终端 1：启动底盘控制节点，发布 /odom、/imu、/PowerVoltage，并接收 /cmd_vel
+roslaunch turn_on_wheeltec_robot turn_on_wheeltec_robot.launch
+
+# 终端 2：启动电流读取和 CSV 数据采集
+roslaunch turn_on_wheeltec_robot data_collector.launch \
+  output_dir:=/home/wheeltec/R550PLUS_data_collect/log_v2 \
+  fault_label:=0 \
+  fault_name:=normal \
+  fault_mode:=0 \
+  run_id:=normal_001 \
+  motion_mode:=straight_back_forth_0.25ms \
+  expected_rate:=20.0
+
+# 如果自动识别电流串口失败，且确认当前电流板是 ttyUSB1，可临时改用：
+roslaunch turn_on_wheeltec_robot data_collector.launch \
+  current_port:=/dev/ttyUSB0 \
+  output_dir:=/home/wheeltec/R550PLUS_data_collect/log_v2 \
+  fault_label:=0 \
+  fault_name:=normal \
+  fault_mode:=0 \
+  run_id:=normal_001 \
+  motion_mode:=straight_back_forth_0.25ms \
+  expected_rate:=20.0
+
+# 终端 3：启动 Web 控制，禁用重复的数据采集节点
+roslaunch turn_on_wheeltec_robot web_control.launch \
+  start_base:=false \
+  start_current_reader:=false \
+  start_data_collector:=false
 ```
 
-## 第一版模型特征
+CSV 默认保存到：
 
-`build_fault_dataset.py` 默认只使用下面 12 个核心特征：
-
-```text
-odom_vx, odom_vy, odom_wz,
-imu_ax, imu_ay, imu_az,
-imu_gx, imu_gy, imu_gz,
-current0, current1, current2
+```bash
+/home/wheeltec/R550PLUS_data_collect/log_v2/
 ```
 
-下面字段可以保留在 raw CSV 或 meta CSV 中，但不能进入第一版 `X_train.npy`：
+浏览器访问：
 
 ```text
-timestamp, run_id, sample_id, fault_name, fault_mode, motion_mode,
-record_rate,
-odom_time, imu_time, voltage_time, current_time, cmd_time,
-odom_age, imu_age, voltage_age, current_age, cmd_age,
-current_dt, current_seq, current_valid, current_reused_count,
-x, y, z, voltage,
-cmd_vx, cmd_vy, cmd_wz,
-wheel_speed0, wheel_speed1, wheel_speed2
+http://172.20.10.6:8000/
 ```
 
-## 启动顺序
+Web 页面 Rosbridge 地址：
 
-建议分三个终端启动，避免节点重复启动和串口占用。
+```text
+ws://172.20.10.6:9090
+```
 
-### 1. 启动底盘
+### 采集前电流确认
 
-终端 1：
+在 Web 端开始运动前，必须先确认 `/current_data` 正常。如果这里没有新消息，本轮 CSV 的 `current_valid` 会一直为 0，不能作为正式样本。
+
+```bash
+rostopic hz /current_data
+rostopic echo -n 1 /current_data
+```
+
+正常情况下应看到类似三路电流：
+
+```text
+data: [-0.0160, -0.0781, -0.1439]
+```
+
+如果没有消息，先检查串口：
+
+```bash
+ls -l /dev/ttyUSB*
+ls -l /dev/serial/by-id/
+```
+
+当前 `current_reader.py` 默认 `current_port:=auto`，会自动探测 `/dev/current_sensor`、`/dev/serial/by-id/*`、`/dev/ttyUSB0`、`/dev/ttyUSB1` 等端口。如果现场确认电流板在 `/dev/ttyUSB1`，可以在终端 2 命令中加入：
+
+```bash
+current_port:=/dev/ttyUSB1
+```
+
+如果 `current_reader` 进程已经退出，当前正在写的 CSV 不建议作为正式数据，停止采集后重新开始。
+
+### 更新后快速测试流程
+
+当电流采集板串口已经修好后，先做一轮 30 秒短测试，不要急着采正式 70 秒数据。
+
+终端 1：启动底盘。
 
 ```bash
 roslaunch turn_on_wheeltec_robot turn_on_wheeltec_robot.launch
 ```
 
-检查底盘话题：
+终端 2：启动电流读取和 CSV 采集。若已经配置 `/dev/current_sensor`，优先使用固定别名：
 
 ```bash
-rostopic hz /odom
-rostopic hz /imu
-rostopic echo -n 1 /PowerVoltage
+roslaunch turn_on_wheeltec_robot data_collector.launch \
+  current_port:=/dev/current_sensor \
+  output_dir:=/home/wheeltec/R550PLUS_data_collect/log_v2 \
+  fault_label:=0 \
+  fault_name:=normal \
+  fault_mode:=0 \
+  run_id:=normal_001 \
+  motion_mode:=straight_back_forth_0.25ms \
+  expected_rate:=20.0
 ```
 
-期望：
-
-```text
-/odom about 20Hz
-/imu about 20Hz
-/PowerVoltage has output
-```
-
-### 2. 单独检查电流板
-
-终端 2 先只测电流，不采 CSV：
-
-```bash
-rosrun turn_on_wheeltec_robot current_reader.py \
-  _port:=/dev/ttyUSB0 \
-  _baud:=115200 \
-  _timeout:=0.05 \
-  _loop_rate:=200 \
-  _report_interval:=5
-```
-
-另开一个终端检查：
-
-```bash
-rostopic hz /current_data
-rostopic echo -n 5 /current_data
-```
-
-期望：
-
-```text
-/current_data about 80-100Hz
-current_reader log: parse_error=0 checksum_error=0
-echo data: exactly three current values
-```
-
-如果 `/dev/ttyUSB0` 不对，先查设备：
-
-```bash
-ls -l /dev/ttyUSB*
-dmesg | tail -n 50
-```
-
-确认哪个端口能稳定输出 `/current_data`，采集命令里的 `current_port` 就填哪个端口。
-
-### 3. 启动 CSV 采集
-
-确认第 2 步电流正常后，停止单独的 `current_reader.py`，再启动采集 launch。
-
-normal run：
+如果暂时没有配置别名，但确认当前电流板端口可用，例如 `/dev/ttyUSB1`：
 
 ```bash
 roslaunch turn_on_wheeltec_robot data_collector.launch \
@@ -146,32 +203,7 @@ roslaunch turn_on_wheeltec_robot data_collector.launch \
   expected_rate:=20.0
 ```
 
-drive_fault run：
-
-```bash
-roslaunch turn_on_wheeltec_robot data_collector.launch \
-  current_port:=/dev/ttyUSB0 \
-  output_dir:=/home/wheeltec/R550PLUS_data_collect/log_v2 \
-  fault_label:=1 \
-  fault_name:=drive_fault \
-  fault_mode:=1 \
-  run_id:=drive_fault_001 \
-  motion_mode:=straight_back_forth_0.25ms \
-  expected_rate:=20.0
-```
-
-启动后必须先看到：
-
-```text
-First valid current frame received; CSV recording can start
-CSV output: ...
-```
-
-看到这两行后再让小车运动。
-
-### 4. 启动 Web 控制
-
-终端 3：
+终端 3：启动 Web 控制，不重复启动底盘、电流和采集节点。
 
 ```bash
 roslaunch turn_on_wheeltec_robot web_control.launch \
@@ -180,61 +212,165 @@ roslaunch turn_on_wheeltec_robot web_control.launch \
   start_data_collector:=false
 ```
 
-浏览器访问：
+终端 4：采集前确认各话题。
 
-```text
-http://<robot-ip>:8000/
+```bash
+rostopic hz /odom
+rostopic hz /imu
+rostopic hz /current_data
+rostopic echo -n 1 /current_data
 ```
 
-Rosbridge 地址：
+合格标准：
 
-```text
-ws://<robot-ip>:9090
-```
+- `/odom` 约 20Hz
+- `/imu` 约 20Hz
+- `/current_data` 有稳定输出，当前实测约 6-7Hz 也可以接受
+- `rostopic echo -n 1 /current_data` 能看到三路非长期全 0 的电流值
 
-当前推荐先用 `0.25m/s` 前后直线折返，保证场地安全和工况一致。如果正式实验改为 `0.5m/s`，normal 和 drive_fault 必须同时改，并同步修改 `motion_mode` 和 inspect 命令中的 `--expected_cmd_abs`。
+确认通过后，在 Web 页面使用“采集测试驾驶台”：
 
-## CSV 字段
+- `Vx = 0.25`
+- `Vy = 0`
+- `Wz = 0`
+- 先采 30 秒
+- 场地有限时用 `+0.25 / -0.25` 前后折返，不要转向掉头
 
-`data_collector.py` 固定写入如下字段：
-
-```text
-timestamp, run_id, sample_id, fault_label, fault_name, fault_mode, motion_mode,
-cmd_vx, cmd_vy, cmd_wz,
-odom_vx, odom_vy, odom_wz,
-wheel_speed0, wheel_speed1, wheel_speed2,
-imu_ax, imu_ay, imu_az, imu_gx, imu_gy, imu_gz,
-voltage,
-current_seq, current0, current1, current2,
-odom_time, imu_time, voltage_time, current_time, current_dt, cmd_time,
-odom_age, imu_age, voltage_age, current_age, cmd_age,
-record_rate, current_valid, current_reused_count
-```
-
-关键调试字段：
-
-| 字段 | 含义 | 正常期望 |
-| --- | --- | --- |
-| record_rate | CSV 实际写入频率 | 接近 20Hz |
-| current_valid | 当前行是否有有效电流 | 基本全为 1 |
-| current_age | 写行时距离最近电流帧的时间 | 通常小于 0.05s |
-| current_dt | 当前 odom timestamp 与最近电流时间的差 | 通常小于 0.05s |
-| current_reused_count | 同一帧电流被连续复用的 CSV 行数 | 多数为 0，偶尔 1 可以接受 |
-
-如果 `current_reused_count` 经常大于 2，说明 20Hz CSV 行在大量复用旧电流，需要重新检查 `/current_data` 频率和串口稳定性。
-
-## 检查 CSV 质量
-
-找到最新 CSV：
+采集结束后，在终端 2 按 `Ctrl+C` 停止。然后检查最新 CSV：
 
 ```bash
 ls -lt /home/wheeltec/R550PLUS_data_collect/log_v2/ | head
+tail -n 5 /home/wheeltec/R550PLUS_data_collect/log_v2/normal_001_*.csv
 ```
 
-检查 normal：
+对最新生成的 CSV 执行质量检查，把文件名替换成实际最新文件：
 
 ```bash
 python3 ~/ml_robot_ws/src/turn_on_wheeltec_robot/scripts/inspect_csv.py \
+  /home/wheeltec/R550PLUS_data_collect/log_v2/normal_001_YYYYMMDD_HHMMSS.csv \
+  --expected_run_id normal_001 \
+  --expected_fault_label 0 \
+  --expected_fault_name normal \
+  --expected_fault_mode 0 \
+  --expected_motion_mode straight_back_forth_0.25ms \
+  --expected_rate 20 \
+  --expected_cmd_abs 0.25
+```
+
+把以下结果发回来即可：
+
+- 终端 2 中 `Current reader:` 和 `recorded ... current_age=...` 的日志
+- `rostopic hz /current_data` 输出
+- `rostopic echo -n 1 /current_data` 输出
+- `inspect_csv.py` 完整输出
+
+### normal_001 推荐采集流程
+
+第一版正常样本建议先采 30 秒验证链路，确认合格后再采完整 70 秒。
+
+1. 终端 1 启动底盘。
+2. 终端 2 启动 `data_collector.launch`，参数使用 `run_id:=normal_001`。
+3. 终端 3 启动 `web_control.launch`。
+4. 浏览器打开 Web 页面并连接 Rosbridge。
+5. 在“采集测试驾驶台”中设置 `Vx=0.25`，运行时长先设为 `30s`。
+6. 点击 `0.25m/s 直行`。
+7. 需要停车时点击 `立即停车`；紧急情况点击 `急停`。
+8. 采集结束后在终端 2 按 `Ctrl+C` 停止 CSV 采集。
+
+完整正式 normal run 可按：
+
+```text
+0-5s 静止
+5-65s Web 驾驶台 0.25m/s 直线运动
+65-70s 停止
+```
+
+场地有限时允许做折返直线运动，但要保持工况一致：
+
+- 推荐 `motion_mode:=straight_back_forth_0.25ms`
+- 使用前后平移折返：`cmd_vx=+0.25` 和 `cmd_vx=-0.25`
+- 尽量不要用 `cmd_wz` 转向掉头
+- 所有类别 normal / drive_fault / wheel_slip / shaft_eccentric 必须采用同一种折返规则
+
+注意：如果输出目录中已经存在 `normal_001.csv`，采集器不会覆盖旧文件，会自动生成 `normal_001_YYYYMMDD_HHMMSS.csv`。
+
+### 采集命名规范
+
+每个 CSV 文件内部会记录 `run_id`、`fault_label`、`fault_name`、`fault_mode`、`motion_mode`。建议每个类别至少采集 5 个独立 run：
+
+```bash
+normal_001.csv
+normal_002.csv
+drive_fault_001.csv
+wheel_slip_001.csv
+shaft_eccentric_001.csv
+encoder_fault_001.csv
+```
+
+### 各类别启动命令
+
+```bash
+# 0 normal：正常
+roslaunch turn_on_wheeltec_robot data_collector.launch fault_label:=0 fault_name:=normal fault_mode:=0 run_id:=normal_001 motion_mode:=straight_0.25ms
+
+# 1 drive_fault：单轮驱动异常/驱动能力下降
+roslaunch turn_on_wheeltec_robot data_collector.launch fault_label:=1 fault_name:=drive_fault fault_mode:=1 run_id:=drive_fault_001 motion_mode:=straight_0.25ms
+
+# 2 wheel_slip：轮子打滑
+roslaunch turn_on_wheeltec_robot data_collector.launch fault_label:=2 fault_name:=wheel_slip fault_mode:=0 run_id:=wheel_slip_001 motion_mode:=straight_0.25ms
+
+# 3 shaft_eccentric：机械偏心/轴偏心
+roslaunch turn_on_wheeltec_robot data_collector.launch fault_label:=3 fault_name:=shaft_eccentric fault_mode:=0 run_id:=shaft_eccentric_001 motion_mode:=straight_0.25ms
+
+# 4 encoder_fault：编码器异常，可选
+roslaunch turn_on_wheeltec_robot data_collector.launch fault_label:=4 fault_name:=encoder_fault fault_mode:=3 run_id:=encoder_fault_001 motion_mode:=straight_0.25ms
+```
+
+### 手动 rostopic 备用流程
+
+如果暂时不使用 Web 页面，也可以手动发布 `cmd_vel`：
+
+```bash
+# 0-5s 静止，记录基线
+# 5-65s 发布 0.25 m/s 直线速度
+rostopic pub /cmd_vel geometry_msgs/Twist \
+  '{linear: {x: 0.25, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}' \
+  -r 20
+
+# 65-70s 停止
+rostopic pub /cmd_vel geometry_msgs/Twist \
+  '{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}' \
+  -1
+```
+
+采集足够时间后先发布停止命令，再在终端 2 按 `Ctrl+C` 停止。
+
+### ROS 端测试检查
+
+启动后先检查话题是否存在、频率是否稳定：
+
+```bash
+rostopic list | grep -E "odom|imu|PowerVoltage|current_data|cmd_vel"
+rostopic hz /odom
+rostopic hz /imu
+rostopic hz /current_data
+rostopic echo -n 1 /current_data
+```
+
+检查 CSV 是否生成、字段是否完整：
+
+```bash
+ls -lh /home/wheeltec/R550PLUS_data_collect/log_v2/
+head -n 2 /home/wheeltec/R550PLUS_data_collect/log_v2/normal_001.csv
+tail -n 5 /home/wheeltec/R550PLUS_data_collect/log_v2/normal_001.csv
+```
+
+重点观察 CSV 中的 `record_rate`、`odom_age`、`imu_age`、`current_age`、`cmd_age`。如果 `cmd_age` 很大，说明采集时没有稳定发布 `/cmd_vel`；如果 `current_age` 持续很大，说明电流板串口或 `/current_data` 频率异常。
+
+采集完成后使用质量检查脚本：
+
+```bash
+python ~/ml_robot_ws/src/turn_on_wheeltec_robot/scripts/inspect_csv.py \
   /home/wheeltec/R550PLUS_data_collect/log_v2/normal_001.csv \
   --expected_run_id normal_001 \
   --expected_fault_label 0 \
@@ -245,50 +381,57 @@ python3 ~/ml_robot_ws/src/turn_on_wheeltec_robot/scripts/inspect_csv.py \
   --expected_cmd_abs 0.25
 ```
 
-检查 drive_fault：
+如果输出中没有明显 `WARNING`，且 `cmd_vx` 运动阶段接近 `0.250000`、`record_rate` 接近 `20Hz`、`current_valid ratio` 接近 `1.0`，则该 run 可作为合格正常样本。
+
+### Web 端采集测试
+
+Web 页面已加入“采集测试驾驶台”，用于更安全地做 0.25 m/s 直线测试：
+
+1. 打开 Web 页面并连接 Rosbridge。
+2. 启动 `data_collector.launch`。
+3. 在 Web 页面设置 `Vx=0.25`、运行时长，例如 `60s`。
+4. 点击 `0.25m/s 直行`。
+5. 需要立即停车时点击 `立即停车`，紧急情况点击 `急停`。
+
+该模式通过 `/web/test_cmd` 和 `/web/test_enable` 控制，后端会直接输出固定 `/cmd_vel`，因此 CSV 中的 `cmd_vx` 应稳定记录为 `0.250000`。倒计时结束后 Web 端会自动停车。
+
+---
+
+## 定速巡航使用方法
+
+1. 浏览器打开 `http://<robot-ip>:8000`
+2. 连接 Rosbridge
+3. 在"定速巡航"面板设置目标速度（Vx/Vy/Wz滑块）
+4. 点击"启动巡航"
+5. 机器人自动保持设定速度
+6. 点击"停止巡航"退出
+
+**巡航控制逻辑：**
+- `/web/cruise_enable` (Bool) - 控制巡航开启/关闭
+- `/web/cruise_cmd` (Twist) - 设置目标速度
+- 摇杆控制不会退出巡航模式
+- 巡航只能通过"停止巡航"按钮或 E-stop 退出
+
+**rostopic 命令示例：**
+```bash
+# 匀速 0.25m/s 前进
+rostopic pub /web/cruise_cmd geometry_msgs/Twist '{linear: {x: 0.25}}'
+rostopic pub /web/cruise_enable std_msgs/Bool '{data: true}'
+
+# 停止巡航
+rostopic pub /web/cruise_enable std_msgs/Bool '{data: false}'
+```
+
+---
+
+## 数据集构建流程
+
+采集完成后，推荐使用 `build_fault_dataset.py` 将多个 run 的 CSV 转为深度学习样本。该脚本会按 `run_id` 划分训练集和测试集，避免重叠滑窗造成数据泄漏。
 
 ```bash
-python3 ~/ml_robot_ws/src/turn_on_wheeltec_robot/scripts/inspect_csv.py \
-  /home/wheeltec/R550PLUS_data_collect/log_v2/drive_fault_001.csv \
-  --expected_run_id drive_fault_001 \
-  --expected_fault_label 1 \
-  --expected_fault_name drive_fault \
-  --expected_fault_mode 1 \
-  --expected_motion_mode straight_back_forth_0.25ms \
-  --expected_rate 20 \
-  --expected_cmd_abs 0.25
-```
-
-合格标准：
-
-```text
-average sample rate close to 20Hz
-record_rate close to 20Hz
-current_valid ratio close to 1.0
-current_age/current_dt usually below 0.05s
-current_reused_count mostly 0 or 1
-NaN/Inf count is 0
-run_id/fault_label/fault_name/fault_mode/motion_mode are exactly expected
-```
-
-## 构建第一版数据集
-
-训练集和测试集必须按 `run_id` 划分，不能把同一个 run 的重叠窗口同时放进训练和测试。
-
-`normal_001` 和 `drive_fault_001` 只能证明链路能跑通、CSV 能被脚本读取。要得到真正可训练、可测试的二分类数据集，至少每类采两个独立 run，例如：
-
-```text
-normal_001, normal_002
-drive_fault_001, drive_fault_002
-```
-
-然后让脚本自动按类别留出测试 run：
-
-```bash
-python3 ~/ml_robot_ws/src/turn_on_wheeltec_robot/scripts/build_fault_dataset.py \
-  --input_dir /home/wheeltec/R550PLUS_data_collect/log_v2 \
+python ~/ml_robot_ws/src/turn_on_wheeltec_robot/scripts/build_fault_dataset.py \
+  --input_dir /home/wheeltec/R550PLUS_data_collect/log \
   --output_dir /home/wheeltec/R550PLUS_dataset/v1 \
-  --pattern "*.csv" \
   --window_size 50 \
   --step_size 10 \
   --scaler standard
@@ -296,7 +439,7 @@ python3 ~/ml_robot_ws/src/turn_on_wheeltec_robot/scripts/build_fault_dataset.py 
 
 输出文件：
 
-```text
+```bash
 X_train.npy
 y_train.npy
 X_test.npy
@@ -307,51 +450,374 @@ scaler.pkl
 feature_config.json
 ```
 
-`X_*` 形状为：
+默认模型输入特征为：
 
 ```text
-[num_samples, 12, window_size]
+cmd_vx, cmd_vy, cmd_wz,
+odom_vx, odom_vy, odom_wz,
+imu_ax, imu_ay, imu_az,
+imu_gx, imu_gy, imu_gz,
+voltage,
+current0, current1, current2
 ```
 
-## 常用调试命令
+如果 CSV 中存在有效的 `wheel_speed0~2`，脚本会自动加入轮速特征。输出的 `X_train` 形状为 `[num_samples, num_channels, window_size]`，适合直接输入 PyTorch `Conv1d` 模型。
+
+---
+
+## 数据说明
+
+### 采样率
+
+- **ROS 话题频率：20Hz**（当前由底盘控制器软件上报周期决定）
+- **IMU 内部采样：100Hz**（固件滤波后对外发布 20Hz）
+- 当前推荐 50 点滑动窗口 = **2.5秒**数据 @ 20Hz
+- 当前推荐 10 点步长 = **0.5秒**
+
+### 时间同步
+
+数据采集时独立记录各话题时间戳和 age：
+- `/odom`, `/imu`, `/PowerVoltage`：20Hz（固件同步发布）
+- `/current_data`：由电流板串口上报，当前固件理论可到 100Hz，实际以 `rostopic hz /current_data` 为准
+- `/cmd_vel`：必须记录，用于比较期望运动与实际运动反馈
+
+### CSV 字段
+
+```
+timestamp,run_id,sample_id,fault_label,fault_name,fault_mode,motion_mode,
+cmd_vx,cmd_vy,cmd_wz,odom_vx,odom_vy,odom_wz,
+wheel_speed0,wheel_speed1,wheel_speed2,
+imu_ax,imu_ay,imu_az,imu_gx,imu_gy,imu_gz,
+voltage,current_seq,current0,current1,current2,
+odom_time,imu_time,voltage_time,current_time,cmd_time,
+odom_age,imu_age,voltage_age,current_age,cmd_age,record_rate,current_valid
+```
+
+| 字段 | 说明 | 单位 | 来源 |
+|------|------|------|------|
+| timestamp | 记录基准时间戳 | 秒 | /odom 时间戳 |
+| run_id | 采集批次 ID | - | launch 参数 |
+| sample_id | 当前 CSV 内样本序号 | - | data_collector |
+| fault_label/fault_name | 故障标签 | - | launch 参数 |
+| fault_mode | 软件故障注入模式 | - | launch 参数 |
+| motion_mode | 标准运动工况 | - | launch 参数 |
+| cmd_vx, cmd_vy, cmd_wz | 期望速度 | m/s, rad/s | /cmd_vel |
+| odom_vx, odom_vy, odom_wz | 实际运动反馈 | m/s, rad/s | /odom |
+| wheel_speed0~2 | 三轮轮速，当前预留 | m/s | 可选话题 |
+| imu_ax~az | 加速度 | m/s² | /imu |
+| imu_gx~gz | 角速度 | rad/s | /imu |
+| voltage | 电池电压 | V | /PowerVoltage |
+| current_seq | 电流帧序号，当前由 ROS 端递增 | - | /current_data |
+| current0~2 | 三通道电流 | A | /current_data |
+| odom_time | /odom 原始时间戳 | 秒 | 底盘串口 |
+| imu_time | /imu 原始时间戳 | 秒 | 底盘串口 |
+| voltage_time | /PowerVoltage 原始时间戳 | 秒 | 底盘串口 |
+| current_time | /current_data 原始时间戳 | 秒 | 电流传感器 |
+| cmd_time | /cmd_vel 接收时间戳 | 秒 | ROS |
+| odom_age~cmd_age | 写入 CSV 时各话题数据年龄 | 秒 | data_collector |
+| record_rate | CSV 实际写入频率 | Hz | data_collector |
+| current_valid | 当前行是否已有有效电流数据 | - | data_collector |
+
+**注意**：`timestamp`、`run_id`、`sample_id`、`fault_name`、各类 `*_time` 和 `*_age` 字段只用于记录和质量检查，不作为第一版模型输入。
+
+### 默认输出目录
+
+- `/home/wheeltec/R550PLUS_data_collect/log/`
+
+### 归一化策略
+
+`build_fault_dataset.py` 支持 `standard` 和 `minmax`。归一化参数只用训练 run 计算，再应用到测试 run，避免测试集泄漏。
+
+---
+
+## 参数配置
+
+### data_collector.launch
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `fault_label` | `0` | 故障标签 |
+| `fault_name` | 空 | 空时由 `fault_label` 自动映射 |
+| `fault_mode` | `0` | 软件故障注入模式记录 |
+| `run_id` | 空 | 空时自动生成 |
+| `motion_mode` | `straight_0.25ms` | 运动工况 |
+| `output_dir` | `/home/wheeltec/R550PLUS_data_collect/log` | CSV 输出目录 |
+| `current_port` | `auto` | 电流板串口；自动在 `/dev/current_sensor`、`/dev/serial/by-id/*`、`/dev/ttyUSB*` 中探测 `$CURRENT` 数据 |
+| `current_baud` | `115200` | 电流板波特率 |
+| `current_open_retries` | `5` | 电流串口打开失败时的重试次数 |
+| `current_open_retry_delay` | `0.8` | 电流串口打开失败后的重试间隔，单位秒 |
+| `wheel_speed_topic` | 空 | 可选轮速话题 |
+
+### data_collector.py
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `~fault_label` | `0` | 故障标签 |
+| `~fault_name` | 空 | 故障名称 |
+| `~fault_mode` | `0` | 故障注入模式 |
+| `~run_id` | 自动生成 | 采集批次 ID |
+| `~motion_mode` | `straight_0.25ms` | 运动工况 |
+| `~output_dir` | `/home/wheeltec/R550PLUS_data_collect/log` | 输出目录 |
+| `~cmd_topic` | `/cmd_vel` | 控制指令话题 |
+| `~wheel_speed_topic` | 空 | 可选轮速话题 |
+
+### cmd_vel_web_adapter.py
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `~max_linear_x` | `0.4` | 最大前进速度 |
+| `~max_linear_y` | `0.4` | 最大横移速度 |
+| `~max_angular_z` | `1.0` | 最大角速度 |
+| `~cmd_timeout` | `0.5` | 命令超时（秒） |
+| `~heartbeat_timeout` | `1.0` | 心跳超时（秒） |
+| `~response_exponent` | `0.70` | 响应曲线指数 |
+| `~min_linear_ratio` | `0.20` | 最小前进比例 |
+
+### web_control.launch
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `start_base` | `true` | 是否启动底盘节点 |
+| `start_current_reader` | `true` | 是否启动电流采集节点 |
+| `start_data_collector` | `true` | 是否启动数据采集节点 |
+| `rosbridge_port` | `9090` | rosbridge 端口 |
+| `web_port` | `8000` | Web 页面端口 |
+| `publish_rate` | `40.0` | 控制发布频率（Hz） |
+| `cmd_timeout` | `0.5` | 命令超时（秒） |
+| `max_linear_x` | `1.50` | 最大前进速度 |
+| `max_linear_y` | `1.00` | 最大横移速度 |
+| `max_angular_z` | `3.75` | 最大角速度 |
+
+---
+
+## 调试命令
 
 ```bash
-rostopic list | grep -E "odom|imu|PowerVoltage|current_data|cmd_vel"
+# 查看话题
+rostopic list | grep -E "odom|imu|PowerVoltage|current|cmd_vel|web"
+
+# 查看话题频率（确认 20Hz）
 rostopic hz /odom
 rostopic hz /imu
 rostopic hz /current_data
-rostopic echo -n 1 /current_data
-rostopic echo -n 1 /cmd_vel
+
+# 查看实时数据
+rostopic echo /odom
+rostopic echo /imu
+rostopic echo /PowerVoltage
+rostopic echo /current_data
+rostopic echo /web/control_status
+rostopic echo /web/cruise_status
+
+# 发送巡航命令
+rostopic pub /web/cruise_cmd geometry_msgs/Twist '{linear: {x: 0.25}}'
+rostopic pub /web/cruise_enable std_msgs/Bool '{data: true}'
+
+# 查看数据采集输出
+ls -la /home/wheeltec/R550PLUS_data_collect/log/
 ```
 
+---
+
+## 常见问题
+
+### 1. 电流数据为空
 ```bash
-head -n 2 /home/wheeltec/R550PLUS_data_collect/log_v2/normal_001.csv
-tail -n 5 /home/wheeltec/R550PLUS_data_collect/log_v2/normal_001.csv
+rostopic echo /current_data
+ls -l /dev/ttyUSB*
+ls -l /dev/serial/by-id/
 ```
 
-## 当前阶段不要做的事
-
-- 不要把 `timestamp/run_id/sample_id/*_time/*_age` 放进模型输入。
-- 不要把 `cmd_vx/cmd_vy/cmd_wz` 放进第一版模型输入。
-- 不要把 `voltage` 放进第一版模型输入。
-- 不要把 `wheel_speed0~2` 放进第一版模型输入。
-- 不要为了第一版数据集改底盘 24 字节协议。
-- 不要在电流频率、CSV 质量没确认前进入模型训练。
-
-## 文件说明
+如果日志出现：
 
 ```text
-turn_on_wheeltec_robot/
-  launch/
-    turn_on_wheeltec_robot.launch    # 底盘 ROS 节点
-    data_collector.launch            # 电流读取 + CSV 采集
-    web_control.launch               # Web 控制
-  scripts/
-    current_reader.py                # 电流板串口读取，发布 /current_data
-    data_collector.py                # /odom 触发写 CSV
-    inspect_csv.py                   # CSV 质量检查
-    build_fault_dataset.py           # CSV 滑窗构建 npy 数据集
-    cmd_vel_web_adapter.py           # Web 控制适配
-  src/
-    wheeltec_robot.cpp               # 底盘串口解析和 ROS 发布
+Input/output error
 ```
+
+这不是普通的端口号跳转，而是 Linux 内核/USB 串口驱动暂时无法打开设备。常见原因是 USB 串口刚枚举完成、设备被其他进程短暂占用、线缆/供电不稳、CH340/CP2102 驱动状态异常，或者 ModemManager 在后台探测串口。
+
+先执行现场排查：
+
+```bash
+# 1. 看电流板到底枚举成哪个设备
+ls -l /dev/ttyUSB*
+ls -l /dev/serial/by-id/
+
+# 2. 看是否有进程占用串口
+sudo lsof /dev/ttyUSB0
+sudo lsof /dev/ttyUSB1
+
+# 3. 看内核是否反复断开/重连 USB 串口
+dmesg | tail -n 50
+
+# 4. 如果系统安装了 ModemManager，建议停止它，避免抢占串口
+sudo systemctl stop ModemManager
+sudo systemctl disable ModemManager
+```
+
+如果仍然报错，拔插电流采集板 USB，等待 3-5 秒后再启动采集。
+
+### 固定电流板串口别名
+
+推荐给电流采集板固定别名 `/dev/current_sensor`，之后不再依赖 `/dev/ttyUSB0` 或 `/dev/ttyUSB1`。
+
+先查看设备信息：
+
+```bash
+udevadm info -a -n /dev/ttyUSB1 | grep -E 'idVendor|idProduct|serial' | head -n 20
+```
+
+如果电流板是 CH340，常见为：
+
+```text
+ATTRS{idVendor}=="1a86"
+ATTRS{idProduct}=="7523"
+```
+
+创建 udev 规则：
+
+```bash
+sudo tee /etc/udev/rules.d/99-current-sensor.rules >/dev/null <<'EOF'
+KERNEL=="ttyUSB*", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", MODE:="0666", GROUP:="dialout", SYMLINK+="current_sensor", ENV{ID_MM_DEVICE_IGNORE}="1"
+EOF
+```
+
+如果你的 `udevadm` 查出来不是 `1a86/7523`，把上面规则里的 `idVendor` 和 `idProduct` 替换成实际值。
+
+重新加载规则：
+
+```bash
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
+
+拔插电流采集板 USB 后确认：
+
+```bash
+ls -l /dev/current_sensor
+```
+
+之后采集推荐使用：
+
+```bash
+roslaunch turn_on_wheeltec_robot data_collector.launch \
+  current_port:=/dev/current_sensor \
+  output_dir:=/home/wheeltec/R550PLUS_data_collect/log_v2 \
+  fault_label:=0 \
+  fault_name:=normal \
+  fault_mode:=0 \
+  run_id:=normal_001 \
+  motion_mode:=straight_back_forth_0.25ms \
+  expected_rate:=20.0
+```
+
+如果 `/dev/ttyUSB0` 和 `/dev/ttyUSB1` 会跳转，优先使用自动探测：
+
+```bash
+rosrun turn_on_wheeltec_robot current_reader.py _port:=auto _baud:=115200
+```
+
+更稳定的做法是给电流采集板配置 udev 固定别名，例如 `/dev/current_sensor`，之后启动时使用：
+
+```bash
+roslaunch turn_on_wheeltec_robot data_collector.launch current_port:=/dev/current_sensor
+```
+
+临时排查时也可以手动指定当前实际端口：
+
+```bash
+roslaunch turn_on_wheeltec_robot data_collector.launch current_port:=/dev/ttyUSB1
+```
+
+### 2. 数据采集频率低
+当前底盘上报任务为 20Hz，控制闭环和编码器更新为 100Hz。后续可在固件中按 20Hz → 50Hz → 100Hz 逐步测试，但需要同时检查丢包率、校验错误、时间戳间隔、重复帧和 CPU 占用。
+
+### 3. 定速巡航速度不准
+PID 参数需根据地面情况调整。当前参数适合瓷砖地面。
+
+### 4. 浏览器无法连接
+- 确认 `web_control.launch` 已启动
+- 确认 `9090` 端口可访问
+- 确认页面中 WebSocket 地址是机器人实际 IP
+
+### 5. 节点冲突
+同时启动 data_collector.launch 和 web_control.launch 会导致节点冲突。使用分开启动方式。
+
+---
+
+## 文件清单
+
+```
+turn_on_wheeltec_robot/
+├── src/
+│   ├── wheeltec_robot.cpp          # 底盘控制节点源码
+│   └── Quaternion_Solution.cpp     # IMU四元数解算
+├── scripts/
+│   ├── current_reader.py            # 电流读取脚本
+│   ├── data_collector.py           # 数据采集脚本（/odom触发，最新值填充）
+│   ├── build_fault_dataset.py      # 多run CSV转滑窗深度学习数据集
+│   ├── cmd_vel_web_adapter.py      # Web控制适配器（PID巡航）
+│   ├── preprocess_data.py          # 数据预处理
+│   ├── create_sliding_windows.py   # 滑动窗口分割
+│   ├── validate_dataset.py          # 数据集验证
+│   └── web_dashboard_server.py      # Web页面服务
+├── web/
+│   └── index.html                  # Web控制页面（含巡航UI）
+├── launch/
+│   ├── turn_on_wheeltec_robot.launch  # 底盘启动
+│   ├── data_collector.launch         # 数据采集启动
+│   ├── web_control.launch           # Web控制启动
+│   └── include/base_serial.launch   # 底盘串口配置
+└── README.md
+```
+
+---
+
+## 作者
+
+杨鹏 - 燕山大学本科毕业设计
+
+
+
+数据采集流程一览
+
+┌─────────────────────────────────────────────────────────────┐
+│  采集前准备                                                │
+│  - 机器人开机                                              │
+│  - 确认串口正常 /dev/ttyUSB0, /dev/ttyCH343USB0           │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│  分开启动（三个终端，避免节点冲突）                       │
+│  终端1: roslaunch turn_on_wheeltec_robot                   │
+│              turn_on_wheeltec_robot.launch                  │
+│  终端2: roslaunch turn_on_wheeltec_robot                   │
+│              data_collector.launch fault_label:=X           │
+│  终端3: roslaunch turn_on_wheeltec_robot                   │
+│              web_control.launch start_base:=false \          │
+│              start_current_reader:=false \                  │
+│              start_data_collector:=false                   │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│  控制机器人移动                                            │
+│  浏览器打开 http://<robot-ip>:8000                         │
+│  使用摇杆/定速巡航控制机器人匀速移动                       │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│  采集足够时间后 Ctrl+C 停止                               │
+│  采集 10-15 分钟/种故障类型                               │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│  预处理（机器人或本地）                                    │
+│  python preprocess_data.py --data_dir ... --pattern '*.csv' │
+│  python create_sliding_windows.py --data_path ...           │
+│  python validate_dataset.py --data_dir ...                  │
+└─────────────────────────────────────────────────────────────┘
+

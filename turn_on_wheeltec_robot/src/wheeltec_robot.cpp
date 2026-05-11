@@ -73,8 +73,15 @@ void turn_on_robot::Cmd_Vel_Callback(const geometry_msgs::Twist &twist_aux)
   Send_Data.tx[8] = transition;
   Send_Data.tx[7] = transition>>8;
 
-  Send_Data.tx[9]=Check_Sum(9,SEND_DATA_CHECK); //For the BCC check bits, see the Check_Sum function //BCC校验位，规则参见Check_Sum函数
-  Send_Data.tx[10]=FRAME_TAIL; //frame tail 0x7D //帧尾0X7D
+  //The target angle for angle closed-loop control (unit: 0.1 degree)
+  //角度闭环控制的目标角度（单位：0.1度）
+  transition=0;
+  transition = (short)(target_angle * 10); //Convert degrees to 0.1 degree units
+  Send_Data.tx[10] = transition;     //取数据的低8位
+  Send_Data.tx[9] = transition>>8;   //取数据的高8位
+
+  Send_Data.tx[11]=Check_Sum(11,SEND_DATA_CHECK); //For the BCC check bits, see the Check_Sum function //BCC校验位，规则参见Check_Sum函数
+  Send_Data.tx[12]=FRAME_TAIL; //frame tail 0x7D //帧尾0X7D
   try
   {
     Stm32_Serial.write(Send_Data.tx,sizeof (Send_Data.tx)); //Sends data to the downloader via serial port //通过串口向下位机发送数据 
@@ -83,6 +90,14 @@ void turn_on_robot::Cmd_Vel_Callback(const geometry_msgs::Twist &twist_aux)
   {
     ROS_ERROR_STREAM("Unable to send data through serial port"); //If sending data fails, an error message is printed //如果发送数据失败，打印错误信息
   }
+}
+/**************************************
+Function: The angle topic subscription Callback function
+功能: 角度话题订阅回调函数
+***************************************/
+void turn_on_robot::Angle_Callback(const std_msgs::Float32 &angle_msg)
+{
+  target_angle = angle_msg.data; //Update target angle //更新目标角度
 }
 /**************************************
 Date: January 28, 2021
@@ -461,7 +476,7 @@ Date: January 28, 2021
 Function: Constructor, executed only once, for initialization
 功能: 构造函数, 只执行一次，用于初始化
 ***************************************/
-turn_on_robot::turn_on_robot():Sampling_Time(0),Power_voltage(0)
+turn_on_robot::turn_on_robot():Sampling_Time(0),Power_voltage(0),target_angle(0)
 {
   //Clear the data
   //清空数据
@@ -495,6 +510,10 @@ turn_on_robot::turn_on_robot():Sampling_Time(0),Power_voltage(0)
   //Set the velocity control command callback function
   //速度控制命令订阅回调函数设置
   Cmd_Vel_Sub     = n.subscribe("cmd_vel",     100, &turn_on_robot::Cmd_Vel_Callback, this); 
+
+  //Set the angle control command callback function
+  //角度控制命令订阅回调函数设置
+  Angle_Sub       = n.subscribe("target_angle", 10, &turn_on_robot::Angle_Callback, this);
 
   ROS_INFO_STREAM("Data ready"); //Prompt message //提示信息
   
@@ -538,15 +557,27 @@ turn_on_robot::~turn_on_robot()
   Send_Data.tx[6] = 0;
   Send_Data.tx[5] = 0;  
 
-  //The target velocity of the Z-axis of the robot //机器人Z轴的目标角速度 
+  //The target angular velocity of the robot's Z axis //机器人Z轴的目标角速度 
   Send_Data.tx[8] = 0;  
   Send_Data.tx[7] = 0;    
-  Send_Data.tx[9]=Check_Sum(9,SEND_DATA_CHECK); //Check the bits for the Check_Sum function //校验位，规则参见Check_Sum函数
-  Send_Data.tx[10]=FRAME_TAIL; 
+
+  //The target angle (set to 0 when stopping) //停止时目标角度设为0
+  Send_Data.tx[10] = 0;
+  Send_Data.tx[9] = 0;
+
+  Send_Data.tx[11]=Check_Sum(11,SEND_DATA_CHECK); //Check the bits for the Check_Sum function //校验位，规则参见Check_Sum函数
+  Send_Data.tx[12]=FRAME_TAIL; 
   try
   {
     Stm32_Serial.write(Send_Data.tx,sizeof (Send_Data.tx)); //Send data to the serial port //向串口发数据  
   }
+  catch (serial::IOException& e)   
+  {
+    ROS_ERROR_STREAM("Unable to send data through serial port"); //If sending data fails, an error message is printed //如果发送数据失败,打印错误信息
+  }
+  Stm32_Serial.close(); //Close the serial port //关闭串口  
+  ROS_INFO_STREAM("Shutting down"); //Prompt message //提示信息
+}
   catch (serial::IOException& e)   
   {
     ROS_ERROR_STREAM("Unable to send data through serial port"); //If sending data fails, an error message is printed //如果发送数据失败,打印错误信息

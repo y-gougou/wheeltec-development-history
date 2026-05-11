@@ -106,7 +106,7 @@ rostopic echo -n 1 /PowerVoltage
 
 ```bash
 rosrun turn_on_wheeltec_robot current_reader.py \
-  _port:=/dev/ttyUSB0 \
+  _port:=/dev/ttyUSB1 \
   _baud:=115200 \
   _timeout:=0.05 \
   _loop_rate:=200 \
