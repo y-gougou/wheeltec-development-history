@@ -120,6 +120,38 @@ def clean_dataframe(df, features):
     return df
 
 
+def trim_dataframe(df, trim_start_sec, trim_end_sec):
+    if trim_start_sec <= 0.0 and trim_end_sec <= 0.0:
+        return df
+    if "timestamp" not in df.columns:
+        raise RuntimeError("--trim_start_sec/--trim_end_sec requires timestamp column")
+
+    kept = []
+    dropped = 0
+    for run_id, run_df in df.groupby("run_id", sort=False):
+        run_df = run_df.copy()
+        run_df["timestamp"] = pd.to_numeric(run_df["timestamp"], errors="coerce")
+        run_df = run_df.dropna(subset=["timestamp"])
+        if run_df.empty:
+            continue
+        start_time = run_df["timestamp"].min() + trim_start_sec
+        end_time = run_df["timestamp"].max() - trim_end_sec
+        if end_time <= start_time:
+            raise RuntimeError(
+                "run %s is too short for trim_start_sec=%.3f trim_end_sec=%.3f"
+                % (run_id, trim_start_sec, trim_end_sec)
+            )
+        mask = (run_df["timestamp"] >= start_time) & (run_df["timestamp"] <= end_time)
+        dropped += int((~mask).sum())
+        kept.append(run_df.loc[mask])
+
+    if not kept:
+        raise RuntimeError("all rows were removed by trimming")
+    trimmed = pd.concat(kept, ignore_index=True)
+    print("trimmed rows: dropped=%d kept=%d" % (dropped, len(trimmed)))
+    return trimmed
+
+
 def split_runs(df, test_ratio, explicit_test_runs):
     runs = sorted(df["run_id"].astype(str).unique())
     if len(runs) < 2 and not explicit_test_runs:
@@ -150,6 +182,42 @@ def split_runs(df, test_ratio, explicit_test_runs):
     if not train_runs or not test_runs:
         raise RuntimeError("train/test run split is empty; collect more runs or pass --test_runs")
     return train_runs, test_runs
+
+
+def split_window_indices_by_label(y, test_ratio):
+    train_indices = []
+    test_indices = []
+    labels = sorted(set(y.tolist()))
+    for label in labels:
+        label_indices = np.where(y == label)[0].tolist()
+        if len(label_indices) < 2:
+            raise RuntimeError(
+                "label %s has only %d window; cannot split with --allow_same_run_split"
+                % (label, len(label_indices))
+            )
+        n_test = max(1, int(round(len(label_indices) * test_ratio)))
+        if n_test >= len(label_indices):
+            n_test = len(label_indices) - 1
+        test_indices.extend(label_indices[-n_test:])
+        train_indices.extend(label_indices[:-n_test])
+    return np.asarray(train_indices, dtype=np.int64), np.asarray(test_indices, dtype=np.int64)
+
+
+def fit_transform_windows_by_train(x_train, x_test, scaler_method):
+    # Windows are [num_windows, num_channels, window_size].  Fit one scaler value
+    # per channel using only training windows, then apply it to both splits.
+    train_values = np.transpose(x_train, (0, 2, 1)).reshape(-1, x_train.shape[1])
+    scaler = SimpleScaler(scaler_method).fit(train_values.astype(np.float32))
+
+    def transform(x):
+        values = np.transpose(x, (0, 2, 1)).reshape(-1, x.shape[1])
+        scaled = scaler.transform(values.astype(np.float32))
+        return np.transpose(
+            scaled.reshape(x.shape[0], x.shape[2], x.shape[1]),
+            (0, 2, 1),
+        ).astype(np.float32)
+
+    return transform(x_train), transform(x_test), scaler
 
 
 def fit_transform_by_train(df, features, train_runs, scaler_method):
@@ -275,23 +343,51 @@ def main():
     parser.add_argument("--scaler", choices=["standard", "minmax"], default="standard")
     parser.add_argument("--test_ratio", type=float, default=0.2)
     parser.add_argument("--test_runs", default="")
+    parser.add_argument("--trim_start_sec", type=float, default=0.0)
+    parser.add_argument("--trim_end_sec", type=float, default=0.0)
+    parser.add_argument(
+        "--allow_same_run_split",
+        action="store_true",
+        help="For quick pipeline validation only: split windows inside each label/run pool.",
+    )
     args = parser.parse_args()
 
     df, paths = load_csvs(args.input_dir, args.pattern)
     features = choose_features(df)
     df = clean_dataframe(df, features)
+    df = trim_dataframe(df, args.trim_start_sec, args.trim_end_sec)
     inferred_sample_rate = infer_sample_rate(df)
 
-    explicit_test_runs = [x.strip() for x in args.test_runs.split(",") if x.strip()]
-    train_runs, test_runs = split_runs(df, args.test_ratio, explicit_test_runs)
-    scaled, scaler = fit_transform_by_train(df, features, train_runs, args.scaler)
+    if args.allow_same_run_split:
+        runs = sorted(df["run_id"].astype(str).unique())
+        X_all, y_all, meta_all, window_counts = make_windows(
+            df, features, runs, args.window_size, args.step_size
+        )
+        train_idx, test_idx = split_window_indices_by_label(y_all, args.test_ratio)
+        X_train_raw = X_all[train_idx]
+        y_train = y_all[train_idx]
+        meta_train = [meta_all[i] for i in train_idx.tolist()]
+        X_test_raw = X_all[test_idx]
+        y_test = y_all[test_idx]
+        meta_test = [meta_all[i] for i in test_idx.tolist()]
+        X_train, X_test, scaler = fit_transform_windows_by_train(
+            X_train_raw, X_test_raw, args.scaler
+        )
+        train_runs = runs
+        test_runs = runs
+        train_counts = {"same_run_split": len(train_idx)}
+        test_counts = {"same_run_split": len(test_idx), "windows_per_run": window_counts}
+    else:
+        explicit_test_runs = [x.strip() for x in args.test_runs.split(",") if x.strip()]
+        train_runs, test_runs = split_runs(df, args.test_ratio, explicit_test_runs)
+        scaled, scaler = fit_transform_by_train(df, features, train_runs, args.scaler)
 
-    X_train, y_train, meta_train, train_counts = make_windows(
-        scaled, features, train_runs, args.window_size, args.step_size
-    )
-    X_test, y_test, meta_test, test_counts = make_windows(
-        scaled, features, test_runs, args.window_size, args.step_size
-    )
+        X_train, y_train, meta_train, train_counts = make_windows(
+            scaled, features, train_runs, args.window_size, args.step_size
+        )
+        X_test, y_test, meta_test, test_counts = make_windows(
+            scaled, features, test_runs, args.window_size, args.step_size
+        )
 
     validate_arrays("train", X_train, y_train)
     validate_arrays("test", X_test, y_test)
@@ -310,6 +406,9 @@ def main():
         "input_shape": ["num_samples", len(features), args.window_size],
         "window_size": args.window_size,
         "step_size": args.step_size,
+        "trim_start_sec": args.trim_start_sec,
+        "trim_end_sec": args.trim_end_sec,
+        "allow_same_run_split": args.allow_same_run_split,
         "scaler_type": args.scaler,
         "scaler": args.scaler,
         "sample_rate": inferred_sample_rate,
