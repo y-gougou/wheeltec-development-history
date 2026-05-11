@@ -29,78 +29,39 @@ from geometry_msgs.msg import Twist
 from std_msgs.msg import Bool, Empty, String
 from nav_msgs.msg import Odometry
 
-
-class PIDController:
-    """简单PID控制器"""
-
-    def __init__(self, kp=0.8, ki=0.1, kd=0.3, output_limit=1.0):
-        self.kp = kp
-        self.ki = ki
-        self.kd = kd
-        self.output_limit = output_limit
-
-        self.integral = 0.0
-        self.prev_error = 0.0
-        self.prev_time = None
-
-    def compute(self, target, current, dt=None):
-        """计算PID输出"""
-        error = target - current
-
-        # 微分项
-        if dt is not None and dt > 0:
-            derivative = (error - self.prev_error) / dt
-        else:
-            derivative = 0.0
-
-        # 积分项（带限幅）
-        self.integral += error * (dt or 0.1)
-        self.integral = max(-0.5, min(0.5, self.integral))  # 积分限幅
-
-        # PID输出
-        output = self.kp * error + self.ki * self.integral + self.kd * derivative
-
-        # 输出限幅
-        output = max(-self.output_limit, min(self.output_limit, output))
-
-        self.prev_error = error
-        return output
-
-    def reset(self):
-        """重置PID状态"""
-        self.integral = 0.0
-        self.prev_error = 0.0
+from core.control_utils import PIDController, clamp, zero_twist
+from core.ros_params import get_float, get_str
 
 
 class WebCmdVelAdapter(object):
     def __init__(self):
-        self.input_topic = rospy.get_param("~input_topic", "/cmd_vel_web")
-        self.output_topic = rospy.get_param("~output_topic", "/cmd_vel")
-        self.heartbeat_topic = rospy.get_param("~heartbeat_topic", "/web/heartbeat")
-        self.estop_topic = rospy.get_param("~estop_topic", "/web/estop")
-        self.status_topic = rospy.get_param("~status_topic", "/web/control_status")
-        self.cruise_cmd_topic = rospy.get_param("~cruise_cmd_topic", "/web/cruise_cmd")
-        self.test_cmd_topic = rospy.get_param("~test_cmd_topic", "/web/test_cmd")
-        self.test_enable_topic = rospy.get_param("~test_enable_topic", "/web/test_enable")
-        self.odom_topic = rospy.get_param("~odom_topic", "/odom")
+        self.input_topic = get_str("~input_topic", "/cmd_vel_web")
+        self.output_topic = get_str("~output_topic", "/cmd_vel")
+        self.heartbeat_topic = get_str("~heartbeat_topic", "/web/heartbeat")
+        self.estop_topic = get_str("~estop_topic", "/web/estop")
+        self.status_topic = get_str("~status_topic", "/web/control_status")
+        self.cruise_cmd_topic = get_str("~cruise_cmd_topic", "/web/cruise_cmd")
+        self.test_cmd_topic = get_str("~test_cmd_topic", "/web/test_cmd")
+        self.test_enable_topic = get_str("~test_enable_topic", "/web/test_enable")
+        self.odom_topic = get_str("~odom_topic", "/odom")
 
-        self.publish_rate = rospy.get_param("~publish_rate", 20.0)
-        self.cmd_timeout = rospy.get_param("~cmd_timeout", 0.5)
-        self.heartbeat_timeout = rospy.get_param("~heartbeat_timeout", 1.0)
+        self.publish_rate = get_float("~publish_rate", 20.0)
+        self.cmd_timeout = get_float("~cmd_timeout", 0.5)
+        self.heartbeat_timeout = get_float("~heartbeat_timeout", 1.0)
 
-        self.max_linear_x = rospy.get_param("~max_linear_x", 0.4)
-        self.max_linear_y = rospy.get_param("~max_linear_y", 0.4)
-        self.max_angular_z = rospy.get_param("~max_angular_z", 1.0)
-        self.linear_deadband = rospy.get_param("~linear_deadband", 0.02)
-        self.angular_deadband = rospy.get_param("~angular_deadband", 0.03)
-        self.response_exponent = rospy.get_param("~response_exponent", 0.70)
-        self.min_linear_ratio = rospy.get_param("~min_linear_ratio", 0.20)
-        self.min_lateral_ratio = rospy.get_param("~min_lateral_ratio", 0.15)
-        self.min_angular_ratio = rospy.get_param("~min_angular_ratio", 0.24)
-        self.cruise_correction_ratio = rospy.get_param("~cruise_correction_ratio", 0.50)
+        self.max_linear_x = get_float("~max_linear_x", 0.4)
+        self.max_linear_y = get_float("~max_linear_y", 0.4)
+        self.max_angular_z = get_float("~max_angular_z", 1.0)
+        self.linear_deadband = get_float("~linear_deadband", 0.02)
+        self.angular_deadband = get_float("~angular_deadband", 0.03)
+        self.response_exponent = get_float("~response_exponent", 0.70)
+        self.min_linear_ratio = get_float("~min_linear_ratio", 0.20)
+        self.min_lateral_ratio = get_float("~min_lateral_ratio", 0.15)
+        self.min_angular_ratio = get_float("~min_angular_ratio", 0.24)
+        self.cruise_correction_ratio = get_float("~cruise_correction_ratio", 0.50)
 
         # PID参数
-        self.pid_rate = rospy.get_param("~pid_rate", 10.0)  # PID更新频率
+        self.pid_rate = get_float("~pid_rate", 10.0)  # PID更新频率
 
         self.last_cmd = Twist()
         self.last_cmd_time = rospy.Time(0)
@@ -121,10 +82,8 @@ class WebCmdVelAdapter(object):
         # PID控制器（每轴一个）
         correction_x_limit = self.max_linear_x * self.cruise_correction_ratio
         correction_y_limit = self.max_linear_y * self.cruise_correction_ratio
-        correction_w_limit = self.max_angular_z * self.cruise_correction_ratio
         self.pid_x = PIDController(kp=0.35, ki=0.03, kd=0.0, output_limit=correction_x_limit)
         self.pid_y = PIDController(kp=0.35, ki=0.03, kd=0.0, output_limit=correction_y_limit)
-        self.pid_angular = PIDController(kp=0.45, ki=0.02, kd=0.0, output_limit=correction_w_limit)
 
         self.cmd_pub = rospy.Publisher(self.output_topic, Twist, queue_size=10)
         self.status_pub = rospy.Publisher(self.status_topic, String, queue_size=10, latch=True)
@@ -150,18 +109,11 @@ class WebCmdVelAdapter(object):
             self.heartbeat_timeout,
         )
 
-    def clamp(self, value, limit):
-        if value > limit:
-            return limit
-        if value < -limit:
-            return -limit
-        return value
-
     def zero_twist(self):
-        return Twist()
+        return zero_twist()
 
     def clamp_axis(self, value, limit):
-        return self.clamp(value, limit)
+        return clamp(value, limit)
 
     def shape_axis(self, value, limit, deadband, min_ratio):
         if limit <= 0.0:
@@ -204,19 +156,19 @@ class WebCmdVelAdapter(object):
 
         limited = Twist()
         limited.linear.x = self.shape_axis(
-            self.clamp(msg.linear.x, self.max_linear_x),
+            clamp(msg.linear.x, self.max_linear_x),
             self.max_linear_x,
             self.linear_deadband,
             self.min_linear_ratio,
         )
         limited.linear.y = self.shape_axis(
-            self.clamp(msg.linear.y, self.max_linear_y),
+            clamp(msg.linear.y, self.max_linear_y),
             self.max_linear_y,
             self.linear_deadband,
             self.min_lateral_ratio,
         )
         limited.angular.z = self.shape_axis(
-            self.clamp(msg.angular.z, self.max_angular_z),
+            clamp(msg.angular.z, self.max_angular_z),
             self.max_angular_z,
             self.angular_deadband,
             self.min_angular_ratio,
@@ -231,9 +183,9 @@ class WebCmdVelAdapter(object):
         now = rospy.Time.now()
 
         # 设置巡航目标（无论是否已激活）
-        self.cruise_target.linear.x = self.clamp(msg.linear.x, self.max_linear_x)
-        self.cruise_target.linear.y = self.clamp(msg.linear.y, self.max_linear_y)
-        self.cruise_target.angular.z = self.clamp(msg.angular.z, self.max_angular_z)
+        self.cruise_target.linear.x = clamp(msg.linear.x, self.max_linear_x)
+        self.cruise_target.linear.y = clamp(msg.linear.y, self.max_linear_y)
+        self.cruise_target.angular.z = clamp(msg.angular.z, self.max_angular_z)
 
         self.cruise_cmd_time = now
 
@@ -256,9 +208,9 @@ class WebCmdVelAdapter(object):
                 rospy.loginfo("Cruise disabled via /web/cruise_enable")
 
     def test_cmd_callback(self, msg):
-        self.test_target.linear.x = self.clamp(msg.linear.x, self.max_linear_x)
-        self.test_target.linear.y = self.clamp(msg.linear.y, self.max_linear_y)
-        self.test_target.angular.z = self.clamp(msg.angular.z, self.max_angular_z)
+        self.test_target.linear.x = clamp(msg.linear.x, self.max_linear_x)
+        self.test_target.linear.y = clamp(msg.linear.y, self.max_linear_y)
+        self.test_target.angular.z = clamp(msg.angular.z, self.max_angular_z)
         self.test_cmd_time = rospy.Time.now()
 
     def test_enable_callback(self, msg):
@@ -297,7 +249,6 @@ class WebCmdVelAdapter(object):
         self.cruise_active = True
         self.pid_x.reset()
         self.pid_y.reset()
-        self.pid_angular.reset()
         self.publish_status("cruise")
         rospy.loginfo("Cruise control activated")
 
@@ -308,7 +259,6 @@ class WebCmdVelAdapter(object):
         self.cruise_active = False
         self.pid_x.reset()
         self.pid_y.reset()
-        self.pid_angular.reset()
         self.publish_status("idle")
         rospy.loginfo("Cruise control deactivated")
 
@@ -354,16 +304,8 @@ class WebCmdVelAdapter(object):
             self.max_linear_y
         )
 
-        # 角速度PID
-        correction_wz = self.pid_angular.compute(
-            self.cruise_target.angular.z,
-            self.current_velocity.angular.z,
-            dt
-        )
-        cmd.angular.z = self.clamp_axis(
-            self.cruise_target.angular.z + correction_wz,
-            self.max_angular_z
-        )
+        # Keep cruise angular speed open-loop. Heading hold is handled by STM32.
+        cmd.angular.z = self.clamp_axis(self.cruise_target.angular.z, self.max_angular_z)
 
         return cmd
 

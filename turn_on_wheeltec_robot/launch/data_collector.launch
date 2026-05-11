@@ -1,11 +1,15 @@
 <launch>
+    <arg name="start_current_reader" default="true" />
+    <arg name="start_data_collector" default="true" />
+
+    <arg name="auto_start" default="true" />
     <arg name="fault_label" default="0" />
-    <arg name="fault_name" default="" />
+    <arg name="fault_name" default="normal" />
     <arg name="fault_mode" default="0" />
     <arg name="run_id" default="" />
-    <arg name="motion_mode" default="straight_0.25ms" />
-    <arg name="output_dir" default="/home/wheeltec/R550PLUS_data_collect/log" />
-    <arg name="current_port" default="/dev/ttyUSB0" />
+    <arg name="motion_mode" default="straight_back_forth_0.25ms" />
+    <arg name="output_dir" default="/home/wheeltec/R550PLUS_data_collect/log_v2" />
+    <arg name="current_port" default="/dev/ttyUSB1" />
     <arg name="current_baud" default="115200" />
     <arg name="current_open_retries" default="3" />
     <arg name="current_open_retry_delay" default="1.0" />
@@ -13,8 +17,14 @@
     <arg name="current_wait_timeout" default="20.0" />
     <arg name="wheel_speed_topic" default="" />
     <arg name="expected_rate" default="20.0" />
+    <arg name="collection_enable_topic" default="/web/collection_enable" />
+    <arg name="collection_config_topic" default="/web/collection_config" />
+    <arg name="collection_status_topic" default="/web/collection_status" />
+    <arg name="current_reader_config_topic" default="/web/current_reader_config" />
+    <arg name="current_reader_status_topic" default="/web/current_reader_status" />
 
-    <node name="current_reader"
+    <node if="$(arg start_current_reader)"
+          name="current_reader"
           pkg="turn_on_wheeltec_robot"
           type="current_reader.py"
           output="screen"
@@ -25,9 +35,12 @@
         <param name="open_retries" value="$(arg current_open_retries)" />
         <param name="open_retry_delay" value="$(arg current_open_retry_delay)" />
         <param name="frame_id" value="current_sensor" />
+        <param name="config_topic" value="$(arg current_reader_config_topic)" />
+        <param name="status_topic" value="$(arg current_reader_status_topic)" />
     </node>
 
-    <node name="data_collector"
+    <node if="$(arg start_data_collector)"
+          name="data_collector"
           pkg="turn_on_wheeltec_robot"
           type="data_collector.py"
           output="screen"
@@ -42,5 +55,9 @@
         <param name="expected_rate" value="$(arg expected_rate)" />
         <param name="require_current_before_record" value="$(arg require_current_before_record)" />
         <param name="current_wait_timeout" value="$(arg current_wait_timeout)" />
+        <param name="auto_start" value="$(arg auto_start)" />
+        <param name="enable_topic" value="$(arg collection_enable_topic)" />
+        <param name="config_topic" value="$(arg collection_config_topic)" />
+        <param name="status_topic" value="$(arg collection_status_topic)" />
     </node>
 </launch>

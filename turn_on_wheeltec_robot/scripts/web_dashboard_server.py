@@ -11,6 +11,9 @@ import threading
 
 import rospy
 
+from core.file_api import list_csv_files, safe_child_file
+from core.ros_params import get_int, get_str
+
 try:
     from http.server import SimpleHTTPRequestHandler
 except ImportError:
@@ -22,8 +25,9 @@ except ImportError:
     from SocketServer import TCPServer
 
 try:
-    from urllib.parse import unquote
+    from urllib.parse import parse_qs, unquote, urlparse
 except ImportError:
+    from urlparse import parse_qs, urlparse
     from urllib import unquote
 
 
@@ -37,40 +41,39 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         return
 
     def do_GET(self):
-        if self.path == "/api/data/list":
-            self._handle_list()
-        elif self.path.startswith("/api/data/download/"):
-            self._handle_download()
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/data/list":
+            self._handle_list(parsed)
+        elif parsed.path.startswith("/api/data/download/"):
+            self._handle_download(parsed)
         else:
             SimpleHTTPRequestHandler.do_GET(self)
 
-    def _handle_list(self):
-        d = self.server.data_dir
+    def _data_dir_from_query(self, parsed):
+        params = parse_qs(parsed.query or "")
+        values = params.get("dir") or []
+        if values and values[0]:
+            return values[0]
+        return self.server.data_dir
+
+    def _handle_list(self, parsed):
+        d = self._data_dir_from_query(parsed)
         if not d or not os.path.isdir(d):
             self._json_response({"files": [], "error": "data dir not found"})
             return
-        entries = []
-        for name in sorted(os.listdir(d), reverse=True):
-            fp = os.path.join(d, name)
-            if os.path.isfile(fp) and name.endswith(".csv"):
-                entries.append({
-                    "name": name,
-                    "size": os.path.getsize(fp),
-                    "mtime": os.path.getmtime(fp),
-                })
-        self._json_response({"files": entries, "dir": d})
+        self._json_response({"files": list_csv_files(d), "dir": d})
 
-    def _handle_download(self):
-        name = unquote(self.path[len("/api/data/download/"):])
+    def _handle_download(self, parsed):
+        name = unquote(parsed.path[len("/api/data/download/"):])
         if not name or ".." in name or "/" in name or "\\" in name:
             self._error_response(400, "invalid filename")
             return
-        d = self.server.data_dir
+        d = self._data_dir_from_query(parsed)
         if not d:
             self._error_response(404, "data dir not configured")
             return
-        fp = os.path.join(d, name)
-        if not os.path.isfile(fp):
+        fp = safe_child_file(d, name)
+        if not fp:
             self._error_response(404, "file not found")
             return
         size = os.path.getsize(fp)
@@ -101,9 +104,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
 class StaticDashboardServer(object):
     def __init__(self):
-        self.host = rospy.get_param("~host", "0.0.0.0")
-        self.port = int(rospy.get_param("~port", 8000))
-        self.data_dir = rospy.get_param("~data_dir", "/home/wheeltec/R550PLUS_data_collect/log")
+        self.host = get_str("~host", "0.0.0.0")
+        self.port = get_int("~port", 8000)
+        self.data_dir = get_str("~data_dir", "/home/wheeltec/R550PLUS_data_collect/log")
         self.package_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.web_root = os.path.join(self.package_root, "web")
         self.dist_root = os.path.join(self.web_root, "dist")

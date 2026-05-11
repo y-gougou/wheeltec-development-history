@@ -12,35 +12,41 @@ XX is the XOR checksum of bytes from '$' to before '*'.
 
 from __future__ import print_function
 
+import json
 import sys
 
 import rospy
-import serial
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray, String
 
+from core.ros_params import get_float, get_int, get_str
+from core.serial_utils import close_serial, open_serial_with_retries, xor_ascii
 
 FRAME_HEADER = "$CURRENT,"
 FRAME_TAIL = "*"
-FRAME_END = "\r\n"
 
 
 class CurrentReader(object):
     def __init__(self):
         rospy.init_node("current_reader", anonymous=True)
 
-        self.port = rospy.get_param("~port", "/dev/ttyUSB0")
-        self.baud = int(rospy.get_param("~baud", 115200))
-        self.timeout = float(rospy.get_param("~timeout", 0.05))
-        self.open_retries = int(rospy.get_param("~open_retries", 3))
-        self.open_retry_delay = float(rospy.get_param("~open_retry_delay", 1.0))
-        self.loop_rate = float(rospy.get_param("~loop_rate", 200.0))
-        self.report_interval = float(rospy.get_param("~report_interval", 5.0))
-        self.max_frames_per_cycle = int(rospy.get_param("~max_frames_per_cycle", 20))
+        self.port = get_str("~port", "/dev/ttyUSB0")
+        self.baud = get_int("~baud", 115200)
+        self.timeout = get_float("~timeout", 0.05)
+        self.open_retries = get_int("~open_retries", 3)
+        self.open_retry_delay = get_float("~open_retry_delay", 1.0)
+        self.loop_rate = get_float("~loop_rate", 200.0)
+        self.report_interval = get_float("~report_interval", 5.0)
+        self.max_frames_per_cycle = get_int("~max_frames_per_cycle", 20)
+        self.config_topic = get_str("~config_topic", "/web/current_reader_config")
+        self.status_topic = get_str("~status_topic", "/web/current_reader_status")
 
         self.pub = rospy.Publisher("/current_data", Float32MultiArray, queue_size=10)
+        self.status_pub = rospy.Publisher(self.status_topic, String, queue_size=1, latch=True)
+        rospy.Subscriber(self.config_topic, String, self._config_callback, queue_size=5)
 
         self.read_count = 0
         self.valid_count = 0
+        self.total_valid_count = 0
         self.timeout_count = 0
         self.parse_error_count = 0
         self.checksum_error_count = 0
@@ -48,46 +54,83 @@ class CurrentReader(object):
         self.last_seq = -1
         self.last_current_time = 0.0
         self.last_report_time = rospy.Time.now().to_sec()
+        self.last_error = ""
+        self.connected = False
+        self.pending_config = None
 
-        self.serial_port = self._open_serial()
-        self.serial_port.reset_input_buffer()
+        self.serial_port = None
+        self._connect()
 
     def _open_serial(self):
-        last_error = None
-        for attempt in range(1, self.open_retries + 1):
-            try:
-                rospy.loginfo(
-                    "Opening current serial port %s @ %d (%d/%d)",
-                    self.port,
-                    self.baud,
-                    attempt,
-                    self.open_retries,
-                )
-                ser = serial.Serial(
-                    port=self.port,
-                    baudrate=self.baud,
-                    timeout=self.timeout,
-                )
-                rospy.loginfo("Current serial opened: %s", ser.name)
-                return ser
-            except serial.SerialException as e:
-                last_error = e
-                if attempt < self.open_retries and not rospy.is_shutdown():
-                    rospy.logwarn(
-                        "Open %s failed: %s; retry in %.1fs",
-                        self.port,
-                        e,
-                        self.open_retry_delay,
-                    )
-                    rospy.sleep(self.open_retry_delay)
-        raise last_error
+        return open_serial_with_retries(
+            self.port,
+            self.baud,
+            self.timeout,
+            self.open_retries,
+            self.open_retry_delay,
+            "current serial",
+        )
 
-    @staticmethod
-    def _xor_ascii(payload):
-        checksum = 0
-        for ch in payload:
-            checksum ^= ord(ch)
-        return checksum
+    def _connect(self):
+        self.connected = False
+        close_serial(getattr(self, "serial_port", None), "current serial")
+        self.serial_port = None
+        try:
+            self.serial_port = self._open_serial()
+            self.serial_port.reset_input_buffer()
+            self.connected = True
+            self.last_error = ""
+        except Exception as e:
+            self.last_error = str(e)
+            rospy.logerr("current_reader open failed: %s", e)
+        self._publish_status()
+
+    def _config_callback(self, msg):
+        try:
+            payload = json.loads(msg.data or "{}")
+        except ValueError as e:
+            self.last_error = "bad config json: %s" % e
+            self._publish_status()
+            return
+        self.pending_config = payload
+
+    def _apply_pending_config(self):
+        if not self.pending_config:
+            return
+        payload = self.pending_config
+        self.pending_config = None
+
+        new_port = str(payload.get("port", self.port)).strip() or self.port
+        new_baud = int(payload.get("baud", self.baud))
+        new_timeout = float(payload.get("timeout", self.timeout))
+        changed = (
+            new_port != self.port
+            or new_baud != self.baud
+            or abs(new_timeout - self.timeout) > 1e-6
+        )
+        self.port = new_port
+        self.baud = new_baud
+        self.timeout = new_timeout
+        if changed or payload.get("reconnect", False):
+            rospy.loginfo("current_reader reconnect requested: port=%s baud=%d", self.port, self.baud)
+            self._connect()
+        else:
+            self._publish_status()
+
+    def _publish_status(self):
+        msg = String()
+        now = rospy.Time.now().to_sec()
+        msg.data = json.dumps({
+            "connected": bool(self.connected),
+            "port": self.port,
+            "baud": self.baud,
+            "timeout": self.timeout,
+            "valid_total": self.total_valid_count,
+            "last_current_age": now - self.last_current_time if self.last_current_time > 0 else None,
+            "last_seq": self.last_seq,
+            "error": self.last_error,
+        })
+        self.status_pub.publish(msg)
 
     def parse_frame(self, line):
         line = line.strip()
@@ -110,7 +153,7 @@ class CurrentReader(object):
             self.parse_error_count += 1
             return None
 
-        calc_checksum = self._xor_ascii(line[:data_end])
+        calc_checksum = xor_ascii(line[:data_end])
 
         try:
             recv_checksum = int(recv_checksum_str, 16)
@@ -173,6 +216,7 @@ class CurrentReader(object):
         msg.data = data
         self.pub.publish(msg)
         self.valid_count += 1
+        self.total_valid_count += 1
         self.last_current_time = rospy.Time.now().to_sec()
 
     def report(self):
@@ -202,6 +246,7 @@ class CurrentReader(object):
         self.checksum_error_count = 0
         self.seq_gap_count = 0
         self.last_report_time = now
+        self._publish_status()
 
     def run(self):
         rospy.loginfo(
@@ -212,9 +257,23 @@ class CurrentReader(object):
         )
         rate = rospy.Rate(self.loop_rate)
         while not rospy.is_shutdown():
+            self._apply_pending_config()
+            if not self.connected or self.serial_port is None:
+                self._publish_status()
+                rate.sleep()
+                continue
             frames_read = 0
             while not rospy.is_shutdown() and frames_read < self.max_frames_per_cycle:
-                data = self.read_frame()
+                try:
+                    data = self.read_frame()
+                except Exception as e:
+                    self.last_error = str(e)
+                    rospy.logerr("current_reader read failed: %s", e)
+                    self.connected = False
+                    close_serial(self.serial_port, "current serial")
+                    self.serial_port = None
+                    self._publish_status()
+                    break
                 if data:
                     self.publish_frame(data)
                 frames_read += 1
@@ -224,9 +283,9 @@ class CurrentReader(object):
             rate.sleep()
 
     def close(self):
-        if hasattr(self, "serial_port") and self.serial_port and self.serial_port.is_open:
-            self.serial_port.close()
-            rospy.loginfo("Current serial closed")
+        close_serial(getattr(self, "serial_port", None), "current serial")
+        self.connected = False
+        self._publish_status()
 
 
 if __name__ == "__main__":

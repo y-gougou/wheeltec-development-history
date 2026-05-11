@@ -14,8 +14,22 @@
   <arg name="current_open_retries" default="3"/>
   <arg name="current_open_retry_delay" default="1.0"/>
 
-  <arg name="data_output_dir" default="/home/wheeltec/R550PLUS_data_collect/log"/>
-  <arg name="data_collect_rate" default="100"/>
+  <arg name="output_dir" default="/home/wheeltec/R550PLUS_data_collect/log_v2"/>
+  <arg name="fault_label" default="0"/>
+  <arg name="fault_name" default="normal"/>
+  <arg name="fault_mode" default="0"/>
+  <arg name="run_id" default=""/>
+  <arg name="motion_mode" default="straight_back_forth_0.25ms"/>
+  <arg name="expected_rate" default="20.0"/>
+  <arg name="require_current_before_record" default="true"/>
+  <arg name="current_wait_timeout" default="20.0"/>
+  <arg name="wheel_speed_topic" default=""/>
+  <arg name="collection_auto_start" default="false"/>
+  <arg name="collection_enable_topic" default="/web/collection_enable"/>
+  <arg name="collection_config_topic" default="/web/collection_config"/>
+  <arg name="collection_status_topic" default="/web/collection_status"/>
+  <arg name="current_reader_config_topic" default="/web/current_reader_config"/>
+  <arg name="current_reader_status_topic" default="/web/current_reader_status"/>
 
   <arg name="publish_rate" default="40.0"/>
   <arg name="cmd_timeout" default="0.5"/>
@@ -41,6 +55,8 @@
     <param name="baud" value="$(arg current_baud)"/>
     <param name="open_retries" value="$(arg current_open_retries)"/>
     <param name="open_retry_delay" value="$(arg current_open_retry_delay)"/>
+    <param name="config_topic" value="$(arg current_reader_config_topic)"/>
+    <param name="status_topic" value="$(arg current_reader_status_topic)"/>
   </node>
 
   <node name="web_cmd_vel_adapter"
@@ -80,7 +96,7 @@
         output="screen">
     <param name="host" value="$(arg web_host)"/>
     <param name="port" value="$(arg web_port)"/>
-    <param name="data_dir" value="$(arg data_output_dir)"/>
+    <param name="data_dir" value="$(arg output_dir)"/>
   </node>
 
   <node if="$(arg start_data_collector)"
@@ -88,8 +104,19 @@
         pkg="turn_on_wheeltec_robot"
         type="data_collector.py"
         output="screen">
-    <param name="output_dir" value="$(arg data_output_dir)"/>
-    <param name="rate" value="$(arg data_collect_rate)"/>
-    <param name="auto_start" value="false"/>
+    <param name="output_dir" value="$(arg output_dir)"/>
+    <param name="fault_label" value="$(arg fault_label)"/>
+    <param name="fault_name" value="$(arg fault_name)"/>
+    <param name="fault_mode" value="$(arg fault_mode)"/>
+    <param name="run_id" value="$(arg run_id)"/>
+    <param name="motion_mode" value="$(arg motion_mode)"/>
+    <param name="wheel_speed_topic" value="$(arg wheel_speed_topic)"/>
+    <param name="expected_rate" value="$(arg expected_rate)"/>
+    <param name="require_current_before_record" value="$(arg require_current_before_record)"/>
+    <param name="current_wait_timeout" value="$(arg current_wait_timeout)"/>
+    <param name="auto_start" value="$(arg collection_auto_start)"/>
+    <param name="enable_topic" value="$(arg collection_enable_topic)"/>
+    <param name="config_topic" value="$(arg collection_config_topic)"/>
+    <param name="status_topic" value="$(arg collection_status_topic)"/>
   </node>
 </launch>

@@ -40,10 +40,14 @@ target_link_libraries(wheeltec_robot_node ${catkin_LIBRARIES})
 catkin_install_python(PROGRAMS
   scripts/current_reader.py
   scripts/data_collector.py
-  scripts/inspect_csv.py
-  scripts/build_fault_dataset.py
   scripts/node_ping.py
+  scripts/send_mark.py
   scripts/cmd_vel_web_adapter.py
   scripts/web_dashboard_server.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
+install(DIRECTORY scripts/core
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+  USE_SOURCE_PERMISSIONS
 )

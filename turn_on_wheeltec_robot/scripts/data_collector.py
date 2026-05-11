@@ -9,15 +9,16 @@ timestamps and ages so bad synchronization can be found before training.
 
 from __future__ import print_function
 
-import csv
-import os
-from datetime import datetime
-
+import json
 import rospy
 from geometry_msgs.msg import Twist, Vector3
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
-from std_msgs.msg import Float32, Float32MultiArray
+from std_msgs.msg import Bool, Float32, Float32MultiArray, String
+
+from core.csv_utils import CsvRowWriter, default_run_id, unique_csv_path
+from core.ros_params import get_bool, get_float, get_int, get_str
+from core.time_utils import age, fmt_float, now_sec, stamp_to_sec, time_delta
 
 
 class DataCollector(object):
@@ -74,32 +75,31 @@ class DataCollector(object):
     ]
 
     def __init__(self):
-        self.output_dir = rospy.get_param(
-            "~output_dir", "/home/wheeltec/R550PLUS_data_collect/log"
-        )
-        self.run_id = rospy.get_param("~run_id", "")
-        self.fault_label = int(rospy.get_param("~fault_label", 0))
-        fault_name_param = rospy.get_param("~fault_name", "")
+        self.output_dir = get_str("~output_dir", "/home/wheeltec/R550PLUS_data_collect/log")
+        self.run_id = get_str("~run_id", "")
+        self.fault_label = get_int("~fault_label", 0)
+        fault_name_param = get_str("~fault_name", "")
         self.fault_name = fault_name_param or self.FAULT_NAMES.get(
             self.fault_label, "unknown"
         )
-        self.fault_mode = int(rospy.get_param("~fault_mode", 0))
-        self.motion_mode = rospy.get_param("~motion_mode", "straight_0.25ms")
-        self.odom_topic = rospy.get_param("~odom_topic", "/odom")
-        self.imu_topic = rospy.get_param("~imu_topic", "/imu")
-        self.voltage_topic = rospy.get_param("~voltage_topic", "/PowerVoltage")
-        self.current_topic = rospy.get_param("~current_topic", "/current_data")
-        self.cmd_topic = rospy.get_param("~cmd_topic", "/cmd_vel")
-        self.wheel_speed_topic = rospy.get_param("~wheel_speed_topic", "")
-        self.expected_rate = float(rospy.get_param("~expected_rate", 20.0))
-        self.require_current_before_record = bool(
-            rospy.get_param("~require_current_before_record", True)
-        )
-        self.current_wait_timeout = float(rospy.get_param("~current_wait_timeout", 20.0))
+        self.fault_mode = get_int("~fault_mode", 0)
+        self.motion_mode = get_str("~motion_mode", "straight_0.25ms")
+        self.odom_topic = get_str("~odom_topic", "/odom")
+        self.imu_topic = get_str("~imu_topic", "/imu")
+        self.voltage_topic = get_str("~voltage_topic", "/PowerVoltage")
+        self.current_topic = get_str("~current_topic", "/current_data")
+        self.cmd_topic = get_str("~cmd_topic", "/cmd_vel")
+        self.wheel_speed_topic = get_str("~wheel_speed_topic", "")
+        self.expected_rate = get_float("~expected_rate", 20.0)
+        self.require_current_before_record = get_bool("~require_current_before_record", True)
+        self.current_wait_timeout = get_float("~current_wait_timeout", 20.0)
+        self.auto_start = get_bool("~auto_start", True)
+        self.enable_topic = get_str("~enable_topic", "/web/collection_enable")
+        self.config_topic = get_str("~config_topic", "/web/collection_config")
+        self.status_topic = get_str("~status_topic", "/web/collection_status")
 
         if not self.run_id:
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.run_id = "%s_%s" % (self.fault_name, stamp)
+            self.run_id = default_run_id(self.fault_name)
 
         self.sample_id = 0
         self.current_seq = -1
@@ -111,8 +111,13 @@ class DataCollector(object):
         self.csv_file = None
         self.csv_writer = None
         self.is_shutting_down = False
-        self.flush_every_rows = int(rospy.get_param("~flush_every_rows", 20))
-        self.flush_interval = float(rospy.get_param("~flush_interval", 1.0))
+        self.collecting = False
+        self.state = "idle"
+        self.current_filepath = ""
+        self.last_error = ""
+        self.flush_every_rows = get_int("~flush_every_rows", 20)
+        self.flush_interval = get_float("~flush_interval", 1.0)
+        self.status_pub = rospy.Publisher(self.status_topic, String, queue_size=1, latch=True)
 
         self.latest = {
             "odom": None,
@@ -130,17 +135,21 @@ class DataCollector(object):
         }
 
         self._setup_subscribers()
-        if self.require_current_before_record:
-            self._wait_for_initial_current()
-        self._open_csv_file()
+        rospy.Subscriber(self.enable_topic, Bool, self._enable_callback, queue_size=5)
+        rospy.Subscriber(self.config_topic, String, self._config_callback, queue_size=5)
+        if self.auto_start:
+            self.start_collection()
+        else:
+            self._publish_status()
 
         rospy.loginfo(
-            "data_collector started: run_id=%s label=%d/%s mode=%s expected_rate=%.1fHz",
+            "data_collector ready: run_id=%s label=%d/%s mode=%s expected_rate=%.1fHz auto_start=%s",
             self.run_id,
             self.fault_label,
             self.fault_name,
             self.motion_mode,
             self.expected_rate,
+            self.auto_start,
         )
 
     def _wait_for_initial_current(self):
@@ -149,10 +158,10 @@ class DataCollector(object):
             self.current_topic,
             self.current_wait_timeout,
         )
-        deadline = rospy.Time.now().to_sec() + self.current_wait_timeout
+        deadline = now_sec() + self.current_wait_timeout
         rate = rospy.Rate(20)
         while not rospy.is_shutdown() and self.latest["current"] is None:
-            if rospy.Time.now().to_sec() >= deadline:
+            if now_sec() >= deadline:
                 raise rospy.ROSException(
                     "No current frame received on %s within %.1fs; aborting CSV collection"
                     % (self.current_topic, self.current_wait_timeout)
@@ -177,63 +186,126 @@ class DataCollector(object):
                 queue_size=50,
             )
 
-    def _open_csv_file(self):
-        if not os.path.exists(self.output_dir):
-            os.makedirs(self.output_dir)
+    def _enable_callback(self, msg):
+        if msg.data:
+            self.start_collection()
+        else:
+            self.stop_collection("stopped")
 
-        filename = "%s.csv" % self.run_id
-        filepath = os.path.join(self.output_dir, filename)
-        if os.path.exists(filepath):
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = "%s_%s.csv" % (self.run_id, stamp)
-            filepath = os.path.join(self.output_dir, filename)
+    def _config_callback(self, msg):
+        try:
+            payload = json.loads(msg.data or "{}")
+        except ValueError as e:
+            self.last_error = "bad config json: %s" % e
+            self._publish_status()
+            return
+        self.apply_config(payload)
+
+    def apply_config(self, payload):
+        was_collecting = self.collecting
+        if was_collecting:
+            self.stop_collection("stopped")
+
+        self.output_dir = str(payload.get("output_dir", self.output_dir)).strip() or self.output_dir
+        self.run_id = str(payload.get("run_id", self.run_id)).strip()
+        self.fault_label = int(payload.get("fault_label", self.fault_label))
+        self.fault_name = str(
+            payload.get("fault_name", self.fault_name or self.FAULT_NAMES.get(self.fault_label, "unknown"))
+        ).strip() or self.FAULT_NAMES.get(self.fault_label, "unknown")
+        self.fault_mode = int(payload.get("fault_mode", self.fault_mode))
+        self.motion_mode = str(payload.get("motion_mode", self.motion_mode)).strip() or self.motion_mode
+        self.expected_rate = float(payload.get("expected_rate", self.expected_rate))
+        self.require_current_before_record = bool(
+            payload.get("require_current_before_record", self.require_current_before_record)
+        )
+        self.current_wait_timeout = float(payload.get("current_wait_timeout", self.current_wait_timeout))
+        if not self.run_id:
+            self.run_id = default_run_id(self.fault_name)
+
+        self.last_error = ""
+        self._publish_status()
+        if payload.get("start", False) or was_collecting:
+            self.start_collection()
+
+    def start_collection(self):
+        if self.collecting:
+            self._publish_status()
+            return
+        try:
+            if self.require_current_before_record:
+                self._wait_for_initial_current()
+            self.sample_id = 0
+            self.current_reused_count = 0
+            self.last_recorded_current_seq = -1
+            self.last_record_wall_time = None
+            self._open_csv_file()
+            self.collecting = True
+            self.state = "collecting"
+            self.last_error = ""
+            rospy.loginfo("CSV collection started: %s", self.current_filepath)
+        except Exception as e:
+            self.collecting = False
+            self.state = "error"
+            self.last_error = str(e)
+            rospy.logerr("CSV collection start failed: %s", e)
+        self._publish_status()
+
+    def stop_collection(self, state="stopped"):
+        if self.csv_writer:
+            self.csv_writer.close()
+            self.csv_file = None
+            self.csv_writer = None
+        self.collecting = False
+        self.state = state
+        rospy.loginfo("CSV collection %s: rows=%d", state, self.sample_id)
+        self._publish_status()
+
+    def _open_csv_file(self):
+        filepath = unique_csv_path(self.output_dir, self.run_id)
+        if not filepath.endswith("%s.csv" % self.run_id):
             rospy.logwarn("CSV exists, writing to new file: %s", filepath)
-        self.csv_file = open(filepath, "w")
-        self.csv_writer = csv.DictWriter(self.csv_file, fieldnames=self.CSV_FIELDS)
-        self.csv_writer.writeheader()
-        self.csv_file.flush()
-        self.last_flush_wall_time = rospy.Time.now().to_sec()
+        self.csv_writer = CsvRowWriter(filepath, self.CSV_FIELDS)
+        self.csv_file = self.csv_writer.fileobj
+        self.current_filepath = filepath
+        self.last_flush_wall_time = now_sec()
         rospy.loginfo("CSV output: %s", filepath)
 
-    @staticmethod
-    def _stamp_to_sec(stamp):
-        value = stamp.to_sec()
-        if value > 0:
-            return value
-        return rospy.Time.now().to_sec()
-
-    @staticmethod
-    def _fmt(value, precision=6):
-        return ("%%.%df" % precision) % float(value)
-
-    def _age(self, now, topic_time):
-        if topic_time is None:
-            return ""
-        return self._fmt(max(0.0, now - topic_time))
-
-    def _time_delta(self, base_time, topic_time):
-        if topic_time is None:
-            return ""
-        return self._fmt(max(0.0, base_time - topic_time))
+    def _publish_status(self):
+        msg = String()
+        msg.data = json.dumps({
+            "state": self.state,
+            "collecting": bool(self.collecting),
+            "run_id": self.run_id,
+            "output_dir": self.output_dir,
+            "fault_label": self.fault_label,
+            "fault_name": self.fault_name,
+            "fault_mode": self.fault_mode,
+            "motion_mode": self.motion_mode,
+            "expected_rate": self.expected_rate,
+            "sample_id": self.sample_id,
+            "filepath": self.current_filepath,
+            "error": self.last_error,
+        })
+        self.status_pub.publish(msg)
 
     def _odom_callback(self, msg):
         if self.is_shutting_down:
             return
         self.latest["odom"] = msg
-        self.latest["odom_time"] = self._stamp_to_sec(msg.header.stamp)
+        self.latest["odom_time"] = stamp_to_sec(msg.header.stamp)
         self._record_row()
 
     def _imu_callback(self, msg):
         self.latest["imu"] = msg
-        self.latest["imu_time"] = self._stamp_to_sec(msg.header.stamp)
+        self.latest["imu_time"] = stamp_to_sec(msg.header.stamp)
 
     def _voltage_callback(self, msg):
         self.latest["voltage"] = msg
-        self.latest["voltage_time"] = rospy.Time.now().to_sec()
+        self.latest["voltage_time"] = now_sec()
 
     def _current_callback(self, msg):
         self.latest["current"] = msg
-        self.latest["current_time"] = rospy.Time.now().to_sec()
+        self.latest["current_time"] = now_sec()
         self.current_seq += 1
         if len(msg.data) >= 4:
             try:
@@ -245,14 +317,19 @@ class DataCollector(object):
 
     def _cmd_callback(self, msg):
         self.latest["cmd"] = msg
-        self.latest["cmd_time"] = rospy.Time.now().to_sec()
+        self.latest["cmd_time"] = now_sec()
 
     def _wheel_speed_callback(self, msg):
         self.latest["wheel_speed"] = msg
-        self.latest["wheel_speed_time"] = rospy.Time.now().to_sec()
+        self.latest["wheel_speed_time"] = now_sec()
 
     def _record_row(self):
-        if self.is_shutting_down or self.csv_file is None or self.csv_writer is None:
+        if (
+            self.is_shutting_down
+            or not self.collecting
+            or self.csv_file is None
+            or self.csv_writer is None
+        ):
             return
 
         odom = self.latest["odom"]
@@ -260,7 +337,7 @@ class DataCollector(object):
             return
 
         timestamp = self.latest["odom_time"]
-        wall_now = rospy.Time.now().to_sec()
+        wall_now = now_sec()
         if self.last_record_wall_time is None:
             record_rate = 0.0
         else:
@@ -288,45 +365,45 @@ class DataCollector(object):
             self.current_reused_count = 0
 
         row = {
-            "timestamp": self._fmt(timestamp),
+            "timestamp": fmt_float(timestamp),
             "run_id": self.run_id,
             "sample_id": self.sample_id,
             "fault_label": self.fault_label,
             "fault_name": self.fault_name,
             "fault_mode": self.fault_mode,
             "motion_mode": self.motion_mode,
-            "cmd_vx": self._fmt(cmd.linear.x if cmd else 0.0),
-            "cmd_vy": self._fmt(cmd.linear.y if cmd else 0.0),
-            "cmd_wz": self._fmt(cmd.angular.z if cmd else 0.0),
-            "odom_vx": self._fmt(odom.twist.twist.linear.x),
-            "odom_vy": self._fmt(odom.twist.twist.linear.y),
-            "odom_wz": self._fmt(odom.twist.twist.angular.z),
-            "wheel_speed0": self._fmt(wheel_values[0] if len(wheel_values) > 0 else 0.0),
-            "wheel_speed1": self._fmt(wheel_values[1] if len(wheel_values) > 1 else 0.0),
-            "wheel_speed2": self._fmt(wheel_values[2] if len(wheel_values) > 2 else 0.0),
-            "imu_ax": self._fmt(imu.linear_acceleration.x if imu else 0.0),
-            "imu_ay": self._fmt(imu.linear_acceleration.y if imu else 0.0),
-            "imu_az": self._fmt(imu.linear_acceleration.z if imu else 0.0),
-            "imu_gx": self._fmt(imu.angular_velocity.x if imu else 0.0),
-            "imu_gy": self._fmt(imu.angular_velocity.y if imu else 0.0),
-            "imu_gz": self._fmt(imu.angular_velocity.z if imu else 0.0),
-            "voltage": self._fmt(voltage.data if voltage else 0.0, 4),
+            "cmd_vx": fmt_float(cmd.linear.x if cmd else 0.0),
+            "cmd_vy": fmt_float(cmd.linear.y if cmd else 0.0),
+            "cmd_wz": fmt_float(cmd.angular.z if cmd else 0.0),
+            "odom_vx": fmt_float(odom.twist.twist.linear.x),
+            "odom_vy": fmt_float(odom.twist.twist.linear.y),
+            "odom_wz": fmt_float(odom.twist.twist.angular.z),
+            "wheel_speed0": fmt_float(wheel_values[0] if len(wheel_values) > 0 else 0.0),
+            "wheel_speed1": fmt_float(wheel_values[1] if len(wheel_values) > 1 else 0.0),
+            "wheel_speed2": fmt_float(wheel_values[2] if len(wheel_values) > 2 else 0.0),
+            "imu_ax": fmt_float(imu.linear_acceleration.x if imu else 0.0),
+            "imu_ay": fmt_float(imu.linear_acceleration.y if imu else 0.0),
+            "imu_az": fmt_float(imu.linear_acceleration.z if imu else 0.0),
+            "imu_gx": fmt_float(imu.angular_velocity.x if imu else 0.0),
+            "imu_gy": fmt_float(imu.angular_velocity.y if imu else 0.0),
+            "imu_gz": fmt_float(imu.angular_velocity.z if imu else 0.0),
+            "voltage": fmt_float(voltage.data if voltage else 0.0, 4),
             "current_seq": self.current_rx_seq,
-            "current0": self._fmt(current_values[0] if len(current_values) > 0 else 0.0, 4),
-            "current1": self._fmt(current_values[1] if len(current_values) > 1 else 0.0, 4),
-            "current2": self._fmt(current_values[2] if len(current_values) > 2 else 0.0, 4),
-            "odom_time": self._fmt(self.latest["odom_time"] or timestamp),
-            "imu_time": self._fmt(self.latest["imu_time"] or timestamp),
-            "voltage_time": self._fmt(self.latest["voltage_time"] or timestamp),
-            "current_time": self._fmt(self.latest["current_time"] or timestamp),
-            "current_dt": self._time_delta(timestamp, self.latest["current_time"]),
-            "cmd_time": self._fmt(self.latest["cmd_time"] or timestamp),
-            "odom_age": self._age(wall_now, self.latest["odom_time"]),
-            "imu_age": self._age(wall_now, self.latest["imu_time"]),
-            "voltage_age": self._age(wall_now, self.latest["voltage_time"]),
-            "current_age": self._age(wall_now, self.latest["current_time"]),
-            "cmd_age": self._age(wall_now, self.latest["cmd_time"]),
-            "record_rate": self._fmt(record_rate, 3),
+            "current0": fmt_float(current_values[0] if len(current_values) > 0 else 0.0, 4),
+            "current1": fmt_float(current_values[1] if len(current_values) > 1 else 0.0, 4),
+            "current2": fmt_float(current_values[2] if len(current_values) > 2 else 0.0, 4),
+            "odom_time": fmt_float(self.latest["odom_time"] or timestamp),
+            "imu_time": fmt_float(self.latest["imu_time"] or timestamp),
+            "voltage_time": fmt_float(self.latest["voltage_time"] or timestamp),
+            "current_time": fmt_float(self.latest["current_time"] or timestamp),
+            "current_dt": time_delta(timestamp, self.latest["current_time"]),
+            "cmd_time": fmt_float(self.latest["cmd_time"] or timestamp),
+            "odom_age": age(wall_now, self.latest["odom_time"]),
+            "imu_age": age(wall_now, self.latest["imu_time"]),
+            "voltage_age": age(wall_now, self.latest["voltage_time"]),
+            "current_age": age(wall_now, self.latest["current_time"]),
+            "cmd_age": age(wall_now, self.latest["cmd_time"]),
+            "record_rate": fmt_float(record_rate, 3),
             "current_valid": 1 if current_valid else 0,
             "current_reused_count": self.current_reused_count,
         }
@@ -344,6 +421,7 @@ class DataCollector(object):
                 row["current_dt"],
                 self.current_reused_count,
             )
+            self._publish_status()
 
     def _flush_if_needed(self, wall_now):
         if self.csv_file is None:
@@ -360,11 +438,7 @@ class DataCollector(object):
 
     def shutdown(self):
         self.is_shutting_down = True
-        if self.csv_file:
-            self.csv_file.flush()
-            self.csv_file.close()
-            self.csv_file = None
-            self.csv_writer = None
+        self.stop_collection("stopped")
         rospy.loginfo("data_collector stopped: %d rows", self.sample_id)
 
 
