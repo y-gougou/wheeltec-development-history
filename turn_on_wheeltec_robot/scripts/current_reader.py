@@ -30,17 +30,23 @@ class CurrentReader(object):
 
         self.port = rospy.get_param("~port", "/dev/ttyUSB1")
         self.baud = int(rospy.get_param("~baud", 115200))
-        self.timeout = float(rospy.get_param("~timeout", 1.0))
+        self.timeout = float(rospy.get_param("~timeout", 0.05))
         self.open_retries = int(rospy.get_param("~open_retries", 3))
         self.open_retry_delay = float(rospy.get_param("~open_retry_delay", 1.0))
+        self.loop_rate = float(rospy.get_param("~loop_rate", 200.0))
+        self.report_interval = float(rospy.get_param("~report_interval", 5.0))
+        self.max_frames_per_cycle = int(rospy.get_param("~max_frames_per_cycle", 20))
 
         self.pub = rospy.Publisher("/current_data", Float32MultiArray, queue_size=10)
 
-        self.ok_count = 0
+        self.read_count = 0
+        self.valid_count = 0
         self.timeout_count = 0
         self.parse_error_count = 0
         self.checksum_error_count = 0
+        self.seq_gap_count = 0
         self.last_seq = -1
+        self.last_current_time = 0.0
         self.last_report_time = rospy.Time.now().to_sec()
 
         self.serial_port = self._open_serial()
@@ -76,7 +82,15 @@ class CurrentReader(object):
                     rospy.sleep(self.open_retry_delay)
         raise last_error
 
+    @staticmethod
+    def _xor_ascii(payload):
+        checksum = 0
+        for ch in payload:
+            checksum ^= ord(ch)
+        return checksum
+
     def parse_frame(self, line):
+        line = line.strip()
         header_pos = line.find(FRAME_HEADER)
         if header_pos < 0:
             self.parse_error_count += 1
@@ -91,12 +105,12 @@ class CurrentReader(object):
         data_end = line.index(FRAME_TAIL)
         data_str = line[len(FRAME_HEADER):data_end]
         checksum_start = data_end + 1
-        checksum_end = line.find(FRAME_END, checksum_start)
-        recv_checksum_str = line[checksum_start:] if checksum_end < 0 else line[checksum_start:checksum_end]
+        recv_checksum_str = line[checksum_start:checksum_start + 2]
+        if len(recv_checksum_str) != 2:
+            self.parse_error_count += 1
+            return None
 
-        calc_checksum = 0
-        for i in range(data_end):
-            calc_checksum ^= ord(line[i])
+        calc_checksum = self._xor_ascii(line[:data_end])
 
         try:
             recv_checksum = int(recv_checksum_str, 16)
@@ -135,6 +149,8 @@ class CurrentReader(object):
             return None
 
         if seq is not None:
+            if self.last_seq >= 0 and seq != self.last_seq + 1:
+                self.seq_gap_count += 1
             self.last_seq = seq
             values.append(float(seq))
         return values
@@ -144,6 +160,7 @@ class CurrentReader(object):
         if not line:
             self.timeout_count += 1
             return None
+        self.read_count += 1
         try:
             line = line.decode("ascii", errors="ignore")
         except Exception:
@@ -151,37 +168,58 @@ class CurrentReader(object):
             return None
         return self.parse_frame(line)
 
+    def publish_frame(self, data):
+        msg = Float32MultiArray()
+        msg.data = data
+        self.pub.publish(msg)
+        self.valid_count += 1
+        self.last_current_time = rospy.Time.now().to_sec()
+
     def report(self):
         now = rospy.Time.now().to_sec()
-        if now - self.last_report_time < 10.0:
+        if now - self.last_report_time < self.report_interval:
             return
 
         dt = max(1e-6, now - self.last_report_time)
+        current_age = now - self.last_current_time if self.last_current_time > 0 else -1.0
         rospy.loginfo(
-            "Current reader: %.1f Hz, ok=%d, timeout=%d, parse_error=%d, checksum_error=%d, last_seq=%d",
-            self.ok_count / dt,
-            self.ok_count,
+            "Current reader: read_rate=%.1f Hz valid_rate=%.1f Hz read=%d valid=%d timeout=%d parse_error=%d checksum_error=%d seq_gap=%d last_seq=%d last_current_age=%.3fs",
+            self.read_count / dt,
+            self.valid_count / dt,
+            self.read_count,
+            self.valid_count,
             self.timeout_count,
             self.parse_error_count,
             self.checksum_error_count,
+            self.seq_gap_count,
             self.last_seq,
+            current_age,
         )
-        self.ok_count = 0
+        self.read_count = 0
+        self.valid_count = 0
         self.timeout_count = 0
         self.parse_error_count = 0
         self.checksum_error_count = 0
+        self.seq_gap_count = 0
         self.last_report_time = now
 
     def run(self):
-        rospy.loginfo("Start reading current data from %s", self.port)
-        rate = rospy.Rate(100)
+        rospy.loginfo(
+            "Start reading current data from %s timeout=%.3fs loop_rate=%.1fHz",
+            self.port,
+            self.timeout,
+            self.loop_rate,
+        )
+        rate = rospy.Rate(self.loop_rate)
         while not rospy.is_shutdown():
-            data = self.read_frame()
-            if data:
-                msg = Float32MultiArray()
-                msg.data = data
-                self.pub.publish(msg)
-                self.ok_count += 1
+            frames_read = 0
+            while not rospy.is_shutdown() and frames_read < self.max_frames_per_cycle:
+                data = self.read_frame()
+                if data:
+                    self.publish_frame(data)
+                frames_read += 1
+                if self.serial_port.in_waiting <= 0:
+                    break
             self.report()
             rate.sleep()
 
