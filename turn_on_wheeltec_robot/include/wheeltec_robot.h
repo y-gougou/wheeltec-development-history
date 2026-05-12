@@ -18,6 +18,7 @@
 #include <tf/transform_broadcaster.h>
 #include <std_msgs/String.h>
 #include <std_msgs/Float32.h>
+#include <std_msgs/Float32MultiArray.h>
 #include <std_msgs/Empty.h>
 #include <nav_msgs/Odometry.h>
 #include <geometry_msgs/Pose.h>
@@ -32,7 +33,7 @@ using namespace std;
 #define READ_DATA_CHECK   0          //Receive data to check flag bits //接收数据校验标志位
 #define FRAME_HEADER      0X7B       //Frame head //帧头
 #define FRAME_TAIL        0X7D       //Frame tail //帧尾
-#define RECEIVE_DATA_SIZE 24         //The length of the data sent by the lower computer //下位机发送过来的数据的长度
+#define RECEIVE_DATA_SIZE 30         //The length of the data sent by the lower computer //下位机发送过来的数据的长度
 #define SEND_DATA_SIZE    13         //The length of data sent by ROS to the lower machine //ROS向下位机发送的数据的长度 (extended for target angle)
 #define PI 				  3.1415926f //PI //圆周率
 
@@ -123,6 +124,7 @@ typedef struct _RECEIVE_DATA_
 		float Y_speed;  
 		float Z_speed;  
 		float Power_Voltage;	
+		float Wheel_Speed[3];
 		unsigned char Frame_Tail;
 }RECEIVE_DATA;
 
@@ -145,17 +147,20 @@ class turn_on_robot
 		//速度话题订阅回调函数
 		void Cmd_Vel_Callback(const geometry_msgs::Twist &twist_aux);              
 		void Send_Chassis_Command(float vx, float vy, float wz, unsigned char angle_flag, float angle_deg);
+		void Fault_Config_Callback(const std_msgs::Float32MultiArray &fault_config);
+		void Send_Fault_Config_Command(bool enable, unsigned char wheel_mask, float alpha_a, float alpha_b, float alpha_c);
 		void Heading_Callback(const std_msgs::Float32 &heading_msg);
 		//The angle topic subscribes to the callback function
 		//角度话题订阅回调函数
 		void Angle_Callback(const std_msgs::Float32 &angle_msg);
 		void Angle_Reset_Callback(const std_msgs::Empty &reset_msg);
-		ros::Subscriber Angle_Sub, Angle_Reset_Sub, Heading_Sub; //Initialize the angle topic subscriber //初始化角度话题订阅者
+		ros::Subscriber Angle_Sub, Angle_Reset_Sub, Heading_Sub, Fault_Config_Sub; //Initialize the angle topic subscriber //初始化角度话题订阅者
 
-		ros::Publisher odom_publisher, imu_publisher, voltage_publisher; //Initialize the topic publisher //初始化话题发布者
+		ros::Publisher odom_publisher, imu_publisher, voltage_publisher, wheel_speed_publisher; //Initialize the topic publisher //初始化话题发布者
 		void Publish_Odom();      //Pub the speedometer topic //发布里程计话题
 		void Publish_ImuSensor(); //Pub the IMU sensor topic //发布IMU传感器话题
 		void Publish_Voltage();   //Pub the power supply voltage topic //发布电源电压话题
+		void Publish_WheelSpeed(); //Pub the wheel-speed topic //发布轮速话题
 
         //从串口(ttyUSB)读取运动底盘速度、IMU、电源电压数据
         //Read motion chassis speed, IMU, power supply voltage data from serial port (ttyUSB)

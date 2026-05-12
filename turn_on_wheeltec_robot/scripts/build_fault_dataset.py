@@ -44,6 +44,7 @@ MODEL_FEATURES_12 = [
 
 LABEL_MAP = OrderedDict([
     ("normal", 0),
+    ("drive_abnormal", 1),
     ("drive_fault", 1),
     ("wheel_slip", 2),
     ("shaft_eccentric", 3),

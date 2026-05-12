@@ -24,7 +24,7 @@ from core.time_utils import age, fmt_float, now_sec, stamp_to_sec, time_delta
 class DataCollector(object):
     FAULT_NAMES = {
         0: "normal",
-        1: "drive_fault",
+        1: "drive_abnormal",
         2: "wheel_slip",
         3: "shaft_eccentric",
         4: "encoder_fault",
@@ -36,6 +36,10 @@ class DataCollector(object):
         "sample_id",
         "fault_label",
         "fault_name",
+        "label",
+        "fault_type",
+        "fault_wheel",
+        "fault_alpha",
         "fault_mode",
         "motion_mode",
         "cmd_vx",
@@ -82,7 +86,14 @@ class DataCollector(object):
         self.fault_name = fault_name_param or self.FAULT_NAMES.get(
             self.fault_label, "unknown"
         )
+        self.label = get_int("~label", self.fault_label)
+        self.fault_type = get_str("~fault_type", self.fault_name)
+        self.fault_wheel = get_str(
+            "~fault_wheel",
+            "none" if self.fault_type == "normal" else "B",
+        )
         self.fault_mode = get_int("~fault_mode", 0)
+        self.fault_alpha = get_float("~fault_alpha", 1.0)
         self.motion_mode = get_str("~motion_mode", "straight_0.25ms")
         self.odom_topic = get_str("~odom_topic", "/odom")
         self.imu_topic = get_str("~imu_topic", "/imu")
@@ -212,9 +223,15 @@ class DataCollector(object):
         self.fault_name = str(
             payload.get("fault_name", self.fault_name or self.FAULT_NAMES.get(self.fault_label, "unknown"))
         ).strip() or self.FAULT_NAMES.get(self.fault_label, "unknown")
+        self.label = int(payload.get("label", payload.get("fault_label", self.label)))
+        self.fault_type = str(
+            payload.get("fault_type", payload.get("fault_name", self.fault_type))
+        ).strip() or "normal"
+        self.fault_wheel = str(payload.get("fault_wheel", self.fault_wheel)).strip() or "none"
         self.fault_mode = int(payload.get("fault_mode", self.fault_mode))
         self.motion_mode = str(payload.get("motion_mode", self.motion_mode)).strip() or self.motion_mode
         self.expected_rate = float(payload.get("expected_rate", self.expected_rate))
+        self.fault_alpha = float(payload.get("fault_alpha", self.fault_alpha))
         self.require_current_before_record = bool(
             payload.get("require_current_before_record", self.require_current_before_record)
         )
@@ -279,6 +296,10 @@ class DataCollector(object):
             "output_dir": self.output_dir,
             "fault_label": self.fault_label,
             "fault_name": self.fault_name,
+            "label": self.label,
+            "fault_type": self.fault_type,
+            "fault_wheel": self.fault_wheel,
+            "fault_alpha": self.fault_alpha,
             "fault_mode": self.fault_mode,
             "motion_mode": self.motion_mode,
             "expected_rate": self.expected_rate,
@@ -370,6 +391,10 @@ class DataCollector(object):
             "sample_id": self.sample_id,
             "fault_label": self.fault_label,
             "fault_name": self.fault_name,
+            "label": self.label,
+            "fault_type": self.fault_type,
+            "fault_wheel": self.fault_wheel,
+            "fault_alpha": fmt_float(self.fault_alpha, 3),
             "fault_mode": self.fault_mode,
             "motion_mode": self.motion_mode,
             "cmd_vx": fmt_float(cmd.linear.x if cmd else 0.0),

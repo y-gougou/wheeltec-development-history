@@ -104,6 +104,19 @@ const zh = {
   inputShape: '输入形状',
   autoStopDuration: '自动停止(秒)',
   autoStopHint: '0=不自动停止',
+  faultInjection: '故障注入',
+  faultInjectionHint: 'A/B/C 轮目标速度衰减',
+  enableFault: '启用故障注入',
+  faultType: '故障类型',
+  faultWheel: '故障轮',
+  faultAlpha: '衰减系数',
+  chassisRadius: '底盘半径(m)',
+  normalMode: '正常模式',
+  driveAbnormal: '驱动异常',
+  applyFaultConfig: '应用配置',
+  resetFault: '重置(关闭)',
+  injectionOn: '注入中',
+  injectionOff: '关闭',
 };
 
 const en = {
@@ -210,6 +223,19 @@ const en = {
   inputShape: 'Input shape',
   autoStopDuration: 'Auto-stop (sec)',
   autoStopHint: '0=no auto-stop',
+  faultInjection: 'Fault Injection',
+  faultInjectionHint: 'A/B/C wheel target-speed attenuation',
+  enableFault: 'Enable fault',
+  faultType: 'Fault type',
+  faultWheel: 'Fault wheel',
+  faultAlpha: 'Alpha (attenuation)',
+  chassisRadius: 'Chassis radius (m)',
+  normalMode: 'Normal',
+  driveAbnormal: 'Drive abnormal',
+  applyFaultConfig: 'Apply config',
+  resetFault: 'Reset (off)',
+  injectionOn: 'Injecting',
+  injectionOff: 'Off',
 };
 
 const dicts = { zh, en };

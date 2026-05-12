@@ -6,7 +6,11 @@
     <arg name="auto_start" default="true" />
     <arg name="fault_label" default="0" />
     <arg name="fault_name" default="normal" />
+    <arg name="label" default="$(arg fault_label)" />
+    <arg name="fault_type" default="$(arg fault_name)" />
+    <arg name="fault_wheel" default="none" />
     <arg name="fault_mode" default="0" />
+    <arg name="fault_alpha" default="1.0" />
     <arg name="run_id" default="" />
     <arg name="motion_mode" default="straight_back_forth_0.25ms" />
     <arg name="output_dir" default="/home/wheeltec/R550PLUS_data_collect/log_v2" />
@@ -21,7 +25,7 @@
     <arg name="voltage_topic" default="/PowerVoltage" />
     <arg name="current_topic" default="/current_data" />
     <arg name="cmd_topic" default="/cmd_vel" />
-    <arg name="wheel_speed_topic" default="" />
+    <arg name="wheel_speed_topic" default="/wheel_speed" />
     <arg name="expected_rate" default="20.0" />
     <arg name="collection_enable_topic" default="/web/collection_enable" />
     <arg name="collection_config_topic" default="/web/collection_config" />
@@ -56,7 +60,11 @@
           respawn="false">
         <param name="fault_label" value="$(arg fault_label)" />
         <param name="fault_name" value="$(arg fault_name)" />
+        <param name="label" value="$(arg label)" />
+        <param name="fault_type" value="$(arg fault_type)" />
+        <param name="fault_wheel" value="$(arg fault_wheel)" />
         <param name="fault_mode" value="$(arg fault_mode)" />
+        <param name="fault_alpha" value="$(arg fault_alpha)" />
         <param name="run_id" value="$(arg run_id)" />
         <param name="motion_mode" value="$(arg motion_mode)" />
         <param name="output_dir" value="$(arg output_dir)" />

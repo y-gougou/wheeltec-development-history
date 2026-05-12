@@ -3,6 +3,15 @@
 
 sensor_msgs::Imu Mpu6050;//Instantiate an IMU object //实例化IMU对象 
 
+static short Clamp_Alpha_Permille(float alpha)
+{
+  if (alpha < 0.0f)
+    alpha = 0.0f;
+  if (alpha > 1.0f)
+    alpha = 1.0f;
+  return (short)(alpha * 1000.0f + 0.5f);
+}
+
 /**************************************
 Date: January 28, 2021
 Function: The main function, ROS initialization, creates the Robot_control object through the Turn_on_robot class and automatically calls the constructor initialization
@@ -81,9 +90,64 @@ void turn_on_robot::Send_Chassis_Command(float vx, float vy, float wz, unsigned 
   }
 }
 
+void turn_on_robot::Send_Fault_Config_Command(bool enable, unsigned char wheel_mask, float alpha_a, float alpha_b, float alpha_c)
+{
+  short transition;
+
+  wheel_mask = wheel_mask & 0x07;
+
+  Send_Data.tx[0]=FRAME_HEADER;
+  Send_Data.tx[1]=4;
+  Send_Data.tx[2]=1;
+  Send_Data.tx[3]=enable ? 1 : 0;
+  Send_Data.tx[4]=wheel_mask;
+
+  transition = Clamp_Alpha_Permille(alpha_a);
+  Send_Data.tx[6] = transition;
+  Send_Data.tx[5] = transition>>8;
+
+  transition = Clamp_Alpha_Permille(alpha_b);
+  Send_Data.tx[8] = transition;
+  Send_Data.tx[7] = transition>>8;
+
+  transition = Clamp_Alpha_Permille(alpha_c);
+  Send_Data.tx[10] = transition;
+  Send_Data.tx[9] = transition>>8;
+
+  Send_Data.tx[11]=Check_Sum(11,SEND_DATA_CHECK);
+  Send_Data.tx[12]=FRAME_TAIL;
+
+  try
+  {
+    Stm32_Serial.write(Send_Data.tx,sizeof(Send_Data.tx));
+  }
+  catch (serial::IOException& e)
+  {
+    ROS_ERROR_STREAM("Unable to send fault config through serial port");
+  }
+}
+
 void turn_on_robot::Cmd_Vel_Callback(const geometry_msgs::Twist &twist_aux)
 {
   Send_Chassis_Command(twist_aux.linear.x, twist_aux.linear.y, twist_aux.angular.z, 0, target_angle);
+}
+
+void turn_on_robot::Fault_Config_Callback(const std_msgs::Float32MultiArray &fault_config)
+{
+  if (fault_config.data.size() < 5)
+  {
+    ROS_WARN_STREAM("fault_config requires [enable, wheel_mask, alpha_a, alpha_b, alpha_c]");
+    return;
+  }
+
+  bool enable = fault_config.data[0] > 0.5f;
+  unsigned char wheel_mask = (unsigned char)((int)fault_config.data[1] & 0x07);
+  Send_Fault_Config_Command(
+      enable,
+      wheel_mask,
+      fault_config.data[2],
+      fault_config.data[3],
+      fault_config.data[4]);
 }
 
 void turn_on_robot::Heading_Callback(const std_msgs::Float32 &heading_msg)
@@ -188,6 +252,17 @@ void turn_on_robot::Publish_Voltage()
         voltage_publisher.publish(voltage_msgs); //Post the power supply voltage topic unit: V, volt //发布电源电压话题单位：V、伏特
       }
 }
+
+void turn_on_robot::Publish_WheelSpeed()
+{
+    std_msgs::Float32MultiArray wheel_speed_msg;
+    wheel_speed_msg.data.resize(3);
+    wheel_speed_msg.data[0] = Receive_Data.Wheel_Speed[0];
+    wheel_speed_msg.data[1] = Receive_Data.Wheel_Speed[1];
+    wheel_speed_msg.data[2] = Receive_Data.Wheel_Speed[2];
+    wheel_speed_publisher.publish(wheel_speed_msg);
+}
+
 /**************************************
 Date: January 28, 2021
 Function: Serial port communication check function, packet n has a byte, the NTH -1 byte is the check bit, the NTH byte bit frame end.Bit XOR results from byte 1 to byte n-2 are compared with byte n-1, which is a BCC check
@@ -246,7 +321,7 @@ bool turn_on_robot::Get_Sensor_Data()
   */  
 
   //Record the position of the head and tail of the frame //记录帧头帧尾位置
-  for(j=0;j<24;j++)
+  for(j=0;j<RECEIVE_DATA_SIZE;j++)
   {
     if(Receive_Data_Pr[j]==FRAME_HEADER)
     Header_Pos=j;
@@ -254,7 +329,7 @@ bool turn_on_robot::Get_Sensor_Data()
     Tail_Pos=j;    
   }
 
-  if(Tail_Pos==(Header_Pos+23))
+  if(Tail_Pos==(Header_Pos+RECEIVE_DATA_SIZE-1))
   {
     //If the end of the frame is the last bit of the packet, copy the packet directly to receive_data.rx
     //如果帧尾在数据包最后一位，直接复制数据包到Receive_Data.rx
@@ -289,13 +364,13 @@ bool turn_on_robot::Get_Sensor_Data()
   */
 
   Receive_Data.Frame_Header= Receive_Data.rx[0]; //The first part of the data is the frame header 0X7B //数据的第一位是帧头0X7B
-  Receive_Data.Frame_Tail= Receive_Data.rx[23];  //The last bit of data is frame tail 0X7D //数据的最后一位是帧尾0X7D
+  Receive_Data.Frame_Tail= Receive_Data.rx[RECEIVE_DATA_SIZE-1];  //The last bit of data is frame tail 0X7D //数据的最后一位是帧尾0X7D
 
   if (Receive_Data.Frame_Header == FRAME_HEADER ) //Judge the frame header //判断帧头
   {
     if (Receive_Data.Frame_Tail == FRAME_TAIL) //Judge the end of the frame //判断帧尾
     { 
-      if (Receive_Data.rx[22] == Check_Sum(22,READ_DATA_CHECK)) //BCC check passes or two packets are interlaced //BCC校验通过或者两组数据包交错
+      if (Receive_Data.rx[28] == Check_Sum(28,READ_DATA_CHECK)) //BCC check passes or two packets are interlaced //BCC校验通过或者两组数据包交错
       {
         Receive_Data.Flag_Stop=Receive_Data.rx[1]; //set aside //预留位
         Robot_Vel.X = Odom_Trans(Receive_Data.rx[2],Receive_Data.rx[3]); //Get the speed of the moving chassis in the X direction //获取运动底盘X方向速度
@@ -331,6 +406,10 @@ bool turn_on_robot::Get_Sensor_Data()
         transition_16 |=  Receive_Data.rx[21];  
         Power_voltage = transition_16/1000+(transition_16 % 1000)*0.001; //Unit conversion millivolt(mv)->volt(v) //单位转换毫伏(mv)->伏(v)
 
+        Receive_Data.Wheel_Speed[0] = Odom_Trans(Receive_Data.rx[22], Receive_Data.rx[23]);
+        Receive_Data.Wheel_Speed[1] = Odom_Trans(Receive_Data.rx[24], Receive_Data.rx[25]);
+        Receive_Data.Wheel_Speed[2] = Odom_Trans(Receive_Data.rx[26], Receive_Data.rx[27]);
+
         return true;
      }
     }
@@ -359,20 +438,20 @@ bool turn_on_robot::Get_Sensor_Data_New()
   Receive_Data.rx[count] = Receive_Data_Pr[0]; //Fill the array with serial data //串口数据填入数组
 
   Receive_Data.Frame_Header = Receive_Data.rx[0]; //The first part of the data is the frame header 0X7B //数据的第一位是帧头0X7B
-  Receive_Data.Frame_Tail = Receive_Data.rx[23];  //The last bit of data is frame tail 0X7D //数据的最后一位是帧尾0X7D
+  Receive_Data.Frame_Tail = Receive_Data.rx[RECEIVE_DATA_SIZE-1];  //The last bit of data is frame tail 0X7D //数据的最后一位是帧尾0X7D
 
   if(Receive_Data_Pr[0] == FRAME_HEADER || count>0) //Ensure that the first data in the array is FRAME_HEADER //确保数组第一个数据为FRAME_HEADER
     count++;
   else 
   	count=0;
-  if(count == 24) //Verify the length of the packet //验证数据包的长度
+  if(count == RECEIVE_DATA_SIZE) //Verify the length of the packet //验证数据包的长度
   {
     count=0;  //Prepare for the serial port data to be refill into the array //为串口数据重新填入数组做准备
     if(Receive_Data.Frame_Tail == FRAME_TAIL) //Verify the frame tail of the packet //验证数据包的帧尾
     {
-      check=Check_Sum(22,READ_DATA_CHECK);  //BCC check passes or two packets are interlaced //BCC校验通过或者两组数据包交错
+      check=Check_Sum(28,READ_DATA_CHECK);  //BCC check passes or two packets are interlaced //BCC校验通过或者两组数据包交错
 
-      if(check == Receive_Data.rx[22])  
+      if(check == Receive_Data.rx[28])
       {
         error=0;  //XOR bit check successful //异或位校验成功
       }
@@ -419,6 +498,10 @@ bool turn_on_robot::Get_Sensor_Data_New()
         transition_16 |=  Receive_Data.rx[20]<<8;
         transition_16 |=  Receive_Data.rx[21];  
         Power_voltage = transition_16/1000+(transition_16 % 1000)*0.001; //Unit conversion millivolt(mv)->volt(v) //单位转换毫伏(mv)->伏(v)
+
+        Receive_Data.Wheel_Speed[0] = Odom_Trans(Receive_Data.rx[22], Receive_Data.rx[23]);
+        Receive_Data.Wheel_Speed[1] = Odom_Trans(Receive_Data.rx[24], Receive_Data.rx[25]);
+        Receive_Data.Wheel_Speed[2] = Odom_Trans(Receive_Data.rx[26], Receive_Data.rx[27]);
           
         return true;
 
@@ -468,6 +551,7 @@ void turn_on_robot::Control()
                 Mpu6050.linear_acceleration.x, Mpu6050.linear_acceleration.y, Mpu6050.linear_acceleration.z);
 
       Publish_Odom();      //Pub the speedometer topic //发布里程计话题
+      Publish_WheelSpeed(); //Pub the wheel-speed topic //发布轮速话题
       Publish_ImuSensor(); //Pub the IMU topic //发布IMU话题    
       Publish_Voltage();   //Pub the topic of power supply voltage //发布电源电压话题
 
@@ -512,10 +596,12 @@ turn_on_robot::turn_on_robot():Sampling_Time(0),Power_voltage(0),target_angle(0)
   voltage_publisher = n.advertise<std_msgs::Float32>("PowerVoltage", 10); //Create a battery-voltage topic publisher //创建电池电压话题发布者
   odom_publisher    = n.advertise<nav_msgs::Odometry>("odom", 50); //Create the odometer topic publisher //创建里程计话题发布者
   imu_publisher     = n.advertise<sensor_msgs::Imu>("imu", 20); //Create an IMU topic publisher //创建IMU话题发布者
+  wheel_speed_publisher = n.advertise<std_msgs::Float32MultiArray>("wheel_speed", 50); //Create wheel-speed topic publisher //创建轮速话题发布者
 
   //Set the velocity control command callback function
   //速度控制命令订阅回调函数设置
   Cmd_Vel_Sub     = n.subscribe("cmd_vel",     100, &turn_on_robot::Cmd_Vel_Callback, this); 
+  Fault_Config_Sub = n.subscribe("/chassis/fault_config", 10, &turn_on_robot::Fault_Config_Callback, this);
 
   //Set the angle control command callback function
   //角度控制命令订阅回调函数设置

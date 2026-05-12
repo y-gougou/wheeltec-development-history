@@ -15,6 +15,7 @@ import ManualDrive from './components/ManualDrive';
 import CruiseControl from './components/CruiseControl';
 import HeadingAngle from './components/HeadingAngle';
 import DataCollection from './components/DataCollection';
+import FaultInjection from './components/FaultInjection';
 import DatasetBuilder from './components/DatasetBuilder';
 import TelemetryBar from './components/TelemetryBar';
 import EventLog from './components/EventLog';
@@ -55,6 +56,13 @@ const initialState = {
     showAdvanced: false,
     autoStopDuration: 0,
   },
+  faultInjection: {
+    enableFault: false,
+    faultType: 'normal',
+    wheels: { A: false, B: true, C: false },
+    alpha: { A: 1, B: 0.5, C: 1 },
+    status: {},
+  },
   dataset: {
     featureSet: '15ch',
     windowSize: 50,
@@ -90,6 +98,7 @@ function reducer(state, action) {
     case 'SET_TELEMETRY': return { ...state, telemetry: { ...state.telemetry, ...action.value } };
     case 'SET_COLLECTION': return { ...state, collection: { ...state.collection, ...action.value } };
     case 'SET_DATASET': return { ...state, dataset: { ...state.dataset, ...action.value } };
+    case 'SET_FAULT_INJECTION': return { ...state, faultInjection: { ...state.faultInjection, ...action.value } };
     case 'ADD_LOG': return { ...state, log: [`${new Date().toLocaleTimeString()}  ${action.text}`, ...state.log].slice(0, 12) };
     case 'SET_THEME': return { ...state, theme: action.value };
     default: return state;
@@ -108,6 +117,8 @@ function App() {
   const telemetryTimerRef = useRef(null);
   const pendingCollectionRef = useRef({});
   const collectionTimerRef = useRef(null);
+  const pendingFaultInjectionRef = useRef({});
+  const faultInjectionTimerRef = useRef(null);
 
   const queueTelemetry = useCallback((value) => {
     pendingTelemetryRef.current = { ...pendingTelemetryRef.current, ...value };
@@ -131,9 +142,21 @@ function App() {
     }, 150);
   }, []);
 
+  const queueFaultInjection = useCallback((value) => {
+    pendingFaultInjectionRef.current = { ...pendingFaultInjectionRef.current, ...value };
+    if (faultInjectionTimerRef.current) return;
+    faultInjectionTimerRef.current = window.setTimeout(() => {
+      faultInjectionTimerRef.current = null;
+      const pending = pendingFaultInjectionRef.current;
+      pendingFaultInjectionRef.current = {};
+      dispatch({ type: 'SET_FAULT_INJECTION', value: pending });
+    }, 150);
+  }, []);
+
   useEffect(() => () => {
     if (telemetryTimerRef.current) window.clearTimeout(telemetryTimerRef.current);
     if (collectionTimerRef.current) window.clearTimeout(collectionTimerRef.current);
+    if (faultInjectionTimerRef.current) window.clearTimeout(faultInjectionTimerRef.current);
   }, []);
 
   // Theme
@@ -203,8 +226,11 @@ function App() {
       const parsed = parseJsonStatus(msg.data, { connected: false });
       queueCollection({ current: parsed, currentPort: parsed.port || state.collection.currentPort });
     }));
+    unsubs.push(ros.subscribe('/web/fault_injection_status', 'std_msgs/String', (msg) => {
+      queueFaultInjection({ status: parseJsonStatus(msg.data, {}) });
+    }));
     return () => unsubs.forEach((unsubscribe) => unsubscribe && unsubscribe());
-  }, [ros.subscribe, state.imuTopic, state.collection.currentPort, queueTelemetry, queueCollection]);
+  }, [ros.subscribe, state.imuTopic, state.collection.currentPort, queueTelemetry, queueCollection, queueFaultInjection]);
 
   // Heartbeat + command sender
   useEffect(() => {
@@ -273,16 +299,38 @@ function App() {
     addLog('Current heading set as 0 deg');
   }
 
+  function getFaultCollectionMeta(faultInjection = state.faultInjection) {
+    const active = Boolean(faultInjection.enableFault) && faultInjection.faultType === 'drive_abnormal';
+    const selected = ['A', 'B', 'C'].filter((wheel) => faultInjection.wheels?.[wheel]);
+    const enabledAlphas = selected.map((wheel) => Number(faultInjection.alpha?.[wheel] ?? 1));
+    const alphaValue = active && enabledAlphas.length > 0 ? Math.min(...enabledAlphas) : 1.0;
+    return {
+      fault_label: active && selected.length > 0 ? 1 : 0,
+      fault_name: active && selected.length > 0 ? 'drive_abnormal' : 'normal',
+      label: active && selected.length > 0 ? 1 : 0,
+      fault_type: active && selected.length > 0 ? 'drive_abnormal' : 'normal',
+      fault_wheel: active && selected.length > 0 ? selected.join('+') : 'none',
+      fault_alpha: alphaValue,
+    };
+  }
+
   // Collection
-  const collectionConfig = useMemo(() => ({
-    output_dir: state.collection.outputDir,
-    fault_label: Number(state.collection.faultLabel) || 0,
-    fault_name: state.collection.faultName || 'normal',
-    fault_mode: Number(state.collection.faultMode) || 0,
-    run_id: state.collection.runId || '',
-    motion_mode: state.collection.motionMode || 'straight_back_forth_0.25ms',
-    expected_rate: Number(state.collection.expectedRate) || 20,
-  }), [state.collection.outputDir, state.collection.faultLabel, state.collection.faultName, state.collection.faultMode, state.collection.runId, state.collection.motionMode, state.collection.expectedRate]);
+  const collectionConfig = useMemo(() => {
+    const faultMeta = getFaultCollectionMeta();
+    return {
+      output_dir: state.collection.outputDir,
+      fault_label: faultMeta.fault_label,
+      fault_name: faultMeta.fault_name,
+      label: faultMeta.label,
+      fault_type: faultMeta.fault_type,
+      fault_wheel: faultMeta.fault_wheel,
+      fault_alpha: faultMeta.fault_alpha,
+      fault_mode: Number(state.collection.faultMode) || 0,
+      run_id: state.collection.runId || '',
+      motion_mode: state.collection.motionMode || 'straight_back_forth_0.25ms',
+      expected_rate: Number(state.collection.expectedRate) || 20,
+    };
+  }, [state.collection.outputDir, state.collection.faultMode, state.collection.runId, state.collection.motionMode, state.collection.expectedRate, state.faultInjection]);
 
   function publishCollectionConfig(extra = {}) {
     return ros.publish('/web/collection_config', { data: JSON.stringify({ ...collectionConfig, ...extra }) });
@@ -343,6 +391,59 @@ function App() {
 
   function onDatasetFieldChange(field, value) {
     dispatch({ type: 'SET_DATASET', value: { [field]: value } });
+  }
+
+  // Fault injection
+  const faultInjectionConfig = useMemo(() => ({
+    enable_fault: state.faultInjection.enableFault,
+    fault_type: state.faultInjection.faultType,
+    wheels: state.faultInjection.wheels,
+    alpha: {
+      A: Number(state.faultInjection.alpha?.A ?? 1),
+      B: Number(state.faultInjection.alpha?.B ?? 0.5),
+      C: Number(state.faultInjection.alpha?.C ?? 1),
+    },
+  }), [state.faultInjection.enableFault, state.faultInjection.faultType, state.faultInjection.wheels, state.faultInjection.alpha]);
+
+  function publishFaultInjectionConfig() {
+    ros.publish('/web/fault_injection_config', { data: JSON.stringify(faultInjectionConfig) });
+    const faultMeta = getFaultCollectionMeta(state.faultInjection);
+    publishCollectionConfig(faultMeta);
+    dispatch({
+      type: 'SET_COLLECTION',
+      value: {
+        faultLabel: faultMeta.fault_label,
+        faultName: faultMeta.fault_name,
+      },
+    });
+    const selected = ['A', 'B', 'C'].filter((wheel) => faultInjectionConfig.wheels?.[wheel]).join('+') || 'none';
+    addLog(`Fault config: ${faultInjectionConfig.enable_fault ? 'ON' : 'OFF'}, wheels=${selected}`);
+  }
+
+  function resetFaultInjection() {
+    const resetState = {
+      enableFault: false,
+      faultType: 'normal',
+      wheels: { A: false, B: true, C: false },
+      alpha: { A: 1, B: 0.5, C: 1 },
+    };
+    const resetConfig = { enable_fault: false, fault_type: 'normal', wheels: resetState.wheels, alpha: resetState.alpha };
+    dispatch({ type: 'SET_FAULT_INJECTION', value: resetState });
+    ros.publish('/web/fault_injection_config', { data: JSON.stringify(resetConfig) });
+    const faultMeta = getFaultCollectionMeta(resetState);
+    publishCollectionConfig(faultMeta);
+    dispatch({
+      type: 'SET_COLLECTION',
+      value: {
+        faultLabel: faultMeta.fault_label,
+        faultName: faultMeta.fault_name,
+      },
+    });
+    addLog('Fault injection reset');
+  }
+
+  function onFaultInjectionFieldChange(field, value) {
+    dispatch({ type: 'SET_FAULT_INJECTION', value: { [field]: value } });
   }
 
   return (
@@ -410,6 +511,14 @@ function App() {
         onReconnect={reconnectCurrentReader} onRefresh={refreshFiles}
         onDownload={downloadFile}
         onToggleAdvanced={() => dispatch({ type: 'SET_COLLECTION', value: { showAdvanced: !state.collection.showAdvanced } })}
+        t={t}
+      />
+
+      <FaultInjection
+        faultInjection={state.faultInjection}
+        onFieldChange={onFaultInjectionFieldChange}
+        onApply={publishFaultInjectionConfig}
+        onReset={resetFaultInjection}
         t={t}
       />
 

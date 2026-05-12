@@ -1,0 +1,25 @@
+<launch>
+    <!-- 故障注入参数 -->
+    <arg name="enable_fault" default="false"/>
+    <arg name="fault_type" default="normal"/>
+    <arg name="fault_wheel" default="B"/>
+    <arg name="fault_alpha" default="0.5"/>
+    <arg name="chassis_radius" default="0.15"/>
+
+    <!-- 底盘节点：正常订阅 /cmd_vel，故障配置通过 /chassis/fault_config 下发到固件 -->
+    <include file="$(find turn_on_wheeltec_robot)/launch/include/base_serial.launch">
+    </include>
+
+    <!-- 故障注入节点 -->
+    <node name="fault_injector"
+          pkg="turn_on_wheeltec_robot"
+          type="fault_injector.py"
+          output="screen">
+        <param name="enable_fault" value="$(arg enable_fault)"/>
+        <param name="fault_type" value="$(arg fault_type)"/>
+        <param name="fault_wheel" value="$(arg fault_wheel)"/>
+        <param name="fault_alpha" value="$(arg fault_alpha)"/>
+        <param name="chassis_radius" value="$(arg chassis_radius)"/>
+        <param name="output_topic" value="/chassis/fault_config"/>
+    </node>
+</launch>
