@@ -1,10 +1,12 @@
 import React from 'react';
 
 function Metric({ label, value, tone = '' }) {
+  const title = typeof value === 'string' ? value : undefined;
+  const valueClass = typeof value === 'string' && value.length > 14 ? 'longValue' : '';
   return (
     <div className={`metric ${tone}`}>
       <span>{label}</span>
-      <strong>{value}</strong>
+      <strong className={valueClass} title={title}>{value}</strong>
     </div>
   );
 }
