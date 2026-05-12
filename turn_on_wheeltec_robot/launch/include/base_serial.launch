@@ -1,6 +1,12 @@
 <launch>
   <!--打开节点wheeltec_robot，初始化串口等操作-->
   <arg name="smoother"  default="false"/> <!-- 是否开启速度平滑功能 -->
+  <arg name="start_heading_bridge" default="true"/>
+  <arg name="heading_imu_topic" default="/n100/imu"/>
+  <arg name="heading_topic" default="/chassis/heading_deg"/>
+  <arg name="heading_status_topic" default="/web/heading_status"/>
+  <arg name="heading_zero_offset" default="0.0"/>
+  <arg name="heading_publish_rate" default="30.0"/>
   <arg name="odom_frame_id"  default="odom_combined"/> <!-- 设置里程计话题起点TF坐标 -->
   <arg name="use_FDI_IMU_GNSS"  default="false"/> <!-- 是否使用飞迪系的惯导、GNSS/RTK模块，默认false：使用小车控制板板载的IMU芯片 -->
   <arg name="use_wheeltec_imu"   default="false"/> <!-- 是否使用wheeltec的惯导，默认false：使用小车控制板板载的IMU芯片 -->
@@ -32,6 +38,18 @@
   <include if="$(arg use_wheeltec_imu)" 
     file="$(find yesense_imu)/launch/yesense_ahrs.launch" >
   </include>
+
+  <node if="$(arg start_heading_bridge)"
+        name="heading_bridge"
+        pkg="turn_on_wheeltec_robot"
+        type="heading_bridge.py"
+        output="screen">
+    <param name="imu_topic" value="$(arg heading_imu_topic)"/>
+    <param name="heading_topic" value="$(arg heading_topic)"/>
+    <param name="status_topic" value="$(arg heading_status_topic)"/>
+    <param name="heading_zero_offset" value="$(arg heading_zero_offset)"/>
+    <param name="publish_rate" value="$(arg heading_publish_rate)"/>
+  </node>
 
   <!-- 如果开启了速度平滑功能，则运行速度平滑功能包 -->
   <include if="$(arg smoother)" 

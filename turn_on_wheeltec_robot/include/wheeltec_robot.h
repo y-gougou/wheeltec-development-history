@@ -145,11 +145,12 @@ class turn_on_robot
 		//速度话题订阅回调函数
 		void Cmd_Vel_Callback(const geometry_msgs::Twist &twist_aux);              
 		void Send_Chassis_Command(float vx, float vy, float wz, unsigned char angle_flag, float angle_deg);
+		void Heading_Callback(const std_msgs::Float32 &heading_msg);
 		//The angle topic subscribes to the callback function
 		//角度话题订阅回调函数
 		void Angle_Callback(const std_msgs::Float32 &angle_msg);
 		void Angle_Reset_Callback(const std_msgs::Empty &reset_msg);
-		ros::Subscriber Angle_Sub, Angle_Reset_Sub; //Initialize the angle topic subscriber //初始化角度话题订阅者
+		ros::Subscriber Angle_Sub, Angle_Reset_Sub, Heading_Sub; //Initialize the angle topic subscriber //初始化角度话题订阅者
 
 		ros::Publisher odom_publisher, imu_publisher, voltage_publisher; //Initialize the topic publisher //初始化话题发布者
 		void Publish_Odom();      //Pub the speedometer topic //发布里程计话题
@@ -175,5 +176,6 @@ class turn_on_robot
         float Power_voltage;       //Power supply voltage //电源电压
         float odom_x_scale, odom_y_scale, odom_z_scale_positive, odom_z_scale_negative;       //Odometer correction parameters //里程计修正参数
         float target_angle;        //Target angle for angle closed-loop control (unit: degree) //角度闭环控制的目标角度（单位：度）
+        float external_heading_deg; //Standardized heading from ROS (degrees)
 };
 #endif

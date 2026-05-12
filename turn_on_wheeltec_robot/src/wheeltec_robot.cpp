@@ -86,6 +86,12 @@ void turn_on_robot::Cmd_Vel_Callback(const geometry_msgs::Twist &twist_aux)
   Send_Chassis_Command(twist_aux.linear.x, twist_aux.linear.y, twist_aux.angular.z, 0, target_angle);
 }
 
+void turn_on_robot::Heading_Callback(const std_msgs::Float32 &heading_msg)
+{
+  external_heading_deg = heading_msg.data;
+  Send_Chassis_Command(0.0f, 0.0f, 0.0f, 3, external_heading_deg);
+}
+
 void turn_on_robot::Angle_Callback(const std_msgs::Float32 &angle_msg)
 {
   target_angle = angle_msg.data;
@@ -476,7 +482,7 @@ Date: January 28, 2021
 Function: Constructor, executed only once, for initialization
 功能: 构造函数, 只执行一次，用于初始化
 ***************************************/
-turn_on_robot::turn_on_robot():Sampling_Time(0),Power_voltage(0),target_angle(0)
+turn_on_robot::turn_on_robot():Sampling_Time(0),Power_voltage(0),target_angle(0),external_heading_deg(0)
 {
   //Clear the data
   //清空数据
@@ -515,6 +521,7 @@ turn_on_robot::turn_on_robot():Sampling_Time(0),Power_voltage(0),target_angle(0)
   //角度控制命令订阅回调函数设置
   Angle_Sub       = n.subscribe("target_angle", 10, &turn_on_robot::Angle_Callback, this);
   Angle_Reset_Sub = n.subscribe("target_angle_reset", 10, &turn_on_robot::Angle_Reset_Callback, this);
+  Heading_Sub     = n.subscribe("/chassis/heading_deg", 10, &turn_on_robot::Heading_Callback, this);
 
   ROS_INFO_STREAM("Data ready"); //Prompt message //提示信息
   

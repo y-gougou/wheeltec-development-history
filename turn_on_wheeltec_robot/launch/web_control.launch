@@ -2,6 +2,7 @@
   <arg name="start_base" default="true"/>
   <arg name="start_current_reader" default="true"/>
   <arg name="start_data_collector" default="true"/>
+  <arg name="start_fdilink_ahrs" default="false"/>
 
   <arg name="rosbridge_host" default="0.0.0.0"/>
   <arg name="rosbridge_port" default="9090"/>
@@ -23,6 +24,11 @@
   <arg name="expected_rate" default="20.0"/>
   <arg name="require_current_before_record" default="true"/>
   <arg name="current_wait_timeout" default="20.0"/>
+  <arg name="imu_topic" default="/imu"/>
+  <arg name="odom_topic" default="/odom"/>
+  <arg name="voltage_topic" default="/PowerVoltage"/>
+  <arg name="current_topic" default="/current_data"/>
+  <arg name="cmd_topic" default="/cmd_vel"/>
   <arg name="wheel_speed_topic" default=""/>
   <arg name="collection_auto_start" default="false"/>
   <arg name="collection_enable_topic" default="/web/collection_enable"/>
@@ -30,6 +36,9 @@
   <arg name="collection_status_topic" default="/web/collection_status"/>
   <arg name="current_reader_config_topic" default="/web/current_reader_config"/>
   <arg name="current_reader_status_topic" default="/web/current_reader_status"/>
+
+  <include file="$(find fdilink_ahrs)/launch/ahrs_data.launch" if="$(arg start_fdilink_ahrs)">
+  </include>
 
   <arg name="publish_rate" default="40.0"/>
   <arg name="cmd_timeout" default="0.5"/>
@@ -110,6 +119,11 @@
     <param name="fault_mode" value="$(arg fault_mode)"/>
     <param name="run_id" value="$(arg run_id)"/>
     <param name="motion_mode" value="$(arg motion_mode)"/>
+    <param name="imu_topic" value="$(arg imu_topic)"/>
+    <param name="odom_topic" value="$(arg odom_topic)"/>
+    <param name="voltage_topic" value="$(arg voltage_topic)"/>
+    <param name="current_topic" value="$(arg current_topic)"/>
+    <param name="cmd_topic" value="$(arg cmd_topic)"/>
     <param name="wheel_speed_topic" value="$(arg wheel_speed_topic)"/>
     <param name="expected_rate" value="$(arg expected_rate)"/>
     <param name="require_current_before_record" value="$(arg require_current_before_record)"/>
