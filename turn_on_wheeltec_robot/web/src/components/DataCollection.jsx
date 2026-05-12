@@ -11,11 +11,13 @@ function SectionTitle({ icon: Icon, title, detail }) {
 }
 
 function Metric({ label, value, tone = '' }) {
-  return <div className={`metric ${tone}`}><span>{label}</span><strong>{value}</strong></div>;
+  const title = typeof value === 'string' ? value : undefined;
+  const valueClass = typeof value === 'string' && value.length > 14 ? 'longValue' : '';
+  return <div className={`metric ${tone}`}><span>{label}</span><strong className={valueClass} title={title}>{value}</strong></div>;
 }
 
 export default function DataCollection({ collection, onFieldChange, onStart, onStop, onReconnect, onRefresh, onDownload, onToggleAdvanced, t }) {
-  const { status, current, currentPort, runId, outputDir, faultLabel, faultName, faultMode, motionMode, expectedRate, showAdvanced, files, fileError } = collection;
+  const { status, current, currentPort, runId, outputDir, faultLabel, faultName, faultMode, motionMode, expectedRate, showAdvanced, files, fileError, autoStopDuration } = collection;
 
   return (
     <section className="panel collectionPanel">
@@ -47,6 +49,7 @@ export default function DataCollection({ collection, onFieldChange, onStart, onS
           <label><span>{t('faultMode')}</span><input type="number" value={faultMode} onChange={(e) => onFieldChange('faultMode', e.target.value)} /></label>
           <label><span>{t('motionMode')}</span><input value={motionMode} onChange={(e) => onFieldChange('motionMode', e.target.value)} /></label>
           <label><span>{t('expectedRate')}</span><input type="number" step="0.1" value={expectedRate} onChange={(e) => onFieldChange('expectedRate', e.target.value)} /></label>
+          <label><span>{t('autoStopDuration')} <small>({t('autoStopHint')})</small></span><input type="number" min="0" step="10" value={autoStopDuration} onChange={(e) => onFieldChange('autoStopDuration', e.target.value)} /></label>
         </div>
       )}
       <div className="fileList">

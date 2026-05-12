@@ -7,7 +7,10 @@ Static file server for the web teleop dashboard, plus a lightweight
 
 import json
 import os
+import subprocess
 import threading
+import time
+import uuid
 
 import rospy
 
@@ -46,8 +49,19 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._handle_list(parsed)
         elif parsed.path.startswith("/api/data/download/"):
             self._handle_download(parsed)
+        elif parsed.path == "/api/dataset/status":
+            self._handle_dataset_status(parsed)
+        elif parsed.path == "/api/dataset/list":
+            self._handle_dataset_list(parsed)
         else:
             SimpleHTTPRequestHandler.do_GET(self)
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/dataset/build":
+            self._handle_dataset_build()
+        else:
+            self._error_response(404, "not found")
 
     def _data_dir_from_query(self, parsed):
         params = parse_qs(parsed.query or "")
@@ -89,6 +103,144 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     break
                 self.wfile.write(chunk)
 
+    # --- Dataset build API ---
+
+    def _read_post_body(self):
+        length = int(self.headers.get("Content-Length", 0))
+        if length <= 0:
+            return b""
+        return self.rfile.read(length)
+
+    def _handle_dataset_build(self):
+        body = self._read_post_body()
+        try:
+            params = json.loads(body) if body else {}
+        except (ValueError, TypeError):
+            self._error_response(400, "invalid JSON body")
+            return
+
+        input_dir = params.get("input_dir", "")
+        output_dir = params.get("output_dir", "")
+        if not input_dir or not output_dir:
+            self._error_response(400, "input_dir and output_dir required")
+            return
+
+        feature_set = params.get("feature_set", "15ch")
+        window_size = int(params.get("window_size", 50))
+        step_size = int(params.get("step_size", 10))
+        scaler = params.get("scaler", "standard")
+        trim_start = float(params.get("trim_start_sec", 5.0))
+        trim_end = float(params.get("trim_end_sec", 5.0))
+        allow_same_run = bool(params.get("allow_same_run_split", False))
+        pattern = params.get("pattern", "*.csv")
+
+        # Find build script
+        pkg_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        script_path = os.path.join(pkg_root, "scripts", "build_fault_dataset.py")
+        if not os.path.isfile(script_path):
+            self._error_response(500, "build_fault_dataset.py not found at %s" % script_path)
+            return
+
+        cmd = [
+            "python3", script_path,
+            "--input_dir", input_dir,
+            "--output_dir", output_dir,
+            "--feature_set", feature_set,
+            "--window_size", str(window_size),
+            "--step_size", str(step_size),
+            "--scaler", scaler,
+            "--trim_start_sec", str(trim_start),
+            "--trim_end_sec", str(trim_end),
+            "--pattern", pattern,
+        ]
+        if allow_same_run:
+            cmd.append("--allow_same_run_split")
+
+        build_id = uuid.uuid4().hex[:12]
+        build_state = {
+            "build_id": build_id,
+            "state": "running",
+            "log_lines": [],
+            "result": None,
+            "started_at": time.time(),
+        }
+        self.server.active_builds[build_id] = build_state
+
+        def run_build():
+            try:
+                proc = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    bufsize=1,
+                )
+                for raw_line in proc.stdout:
+                    line = raw_line.decode("utf-8", errors="replace").rstrip("\n")
+                    build_state["log_lines"].append(line)
+                    if len(build_state["log_lines"]) > 500:
+                        build_state["log_lines"] = build_state["log_lines"][-500:]
+                proc.wait()
+                if proc.returncode == 0:
+                    build_state["state"] = "done"
+                    # Try to load feature_config.json
+                    config_path = os.path.join(output_dir, "feature_config.json")
+                    if os.path.isfile(config_path):
+                        with open(config_path, "r") as f:
+                            build_state["result"] = json.load(f)
+                else:
+                    build_state["state"] = "error"
+                    build_state["log_lines"].append("Process exited with code %d" % proc.returncode)
+            except Exception as e:
+                build_state["state"] = "error"
+                build_state["log_lines"].append("Exception: %s" % str(e))
+
+        t = threading.Thread(target=run_build)
+        t.daemon = True
+        t.start()
+
+        self._json_response({"status": "started", "build_id": build_id})
+
+    def _handle_dataset_status(self, parsed):
+        params = parse_qs(parsed.query or "")
+        build_id = (params.get("build_id") or [None])[0]
+        if not build_id:
+            self._error_response(400, "build_id required")
+            return
+
+        builds = self.server.active_builds
+        if build_id not in builds:
+            self._error_response(404, "build not found")
+            return
+
+        state = builds[build_id]
+        # Return last 100 log lines
+        self._json_response({
+            "build_id": build_id,
+            "state": state["state"],
+            "log_lines": state["log_lines"][-100:],
+            "result": state["result"],
+        })
+
+    def _handle_dataset_list(self, parsed):
+        params = parse_qs(parsed.query or "")
+        base_dir = (params.get("dir") or [None])[0]
+        if not base_dir:
+            base_dir = self.server.data_dir
+        if not base_dir or not os.path.isdir(base_dir):
+            self._json_response({"datasets": []})
+            return
+
+        datasets = []
+        for name in sorted(os.listdir(base_dir)):
+            d = os.path.join(base_dir, name)
+            config_path = os.path.join(d, "feature_config.json")
+            if os.path.isdir(d) and os.path.isfile(config_path):
+                try:
+                    with open(config_path, "r") as f:
+                        config = json.load(f)
+                    datasets.append({"name": name, "path": d, "config": config})
+                except Exception:
+                    datasets.append({"name": name, "path": d, "config": None})
+        self._json_response({"datasets": datasets})
+
     def _json_response(self, obj, code=200):
         body = json.dumps(obj).encode("utf-8")
         self.send_response(code)
@@ -121,6 +273,7 @@ class StaticDashboardServer(object):
         os.chdir(self.dist_root if os.path.isdir(self.dist_root) else self.web_root)
         self.server = ReusableTCPServer((self.host, self.port), DashboardHandler)
         self.server.data_dir = self.data_dir
+        self.server.active_builds = {}
         self.server_thread = threading.Thread(target=self.server.serve_forever)
         self.server_thread.daemon = True
         self.server_thread.start()

@@ -15,6 +15,7 @@ import ManualDrive from './components/ManualDrive';
 import CruiseControl from './components/CruiseControl';
 import HeadingAngle from './components/HeadingAngle';
 import DataCollection from './components/DataCollection';
+import DatasetBuilder from './components/DatasetBuilder';
 import TelemetryBar from './components/TelemetryBar';
 import EventLog from './components/EventLog';
 
@@ -52,6 +53,23 @@ const initialState = {
     files: [],
     fileError: '',
     showAdvanced: false,
+    autoStopDuration: 0,
+  },
+  dataset: {
+    featureSet: '15ch',
+    windowSize: 50,
+    stepSize: 10,
+    scaler: 'standard',
+    trimStart: 5,
+    trimEnd: 5,
+    allowSameRunSplit: false,
+    inputDir: '/home/wheeltec/R550PLUS_data_collect/log_v2',
+    outputDir: '/home/wheeltec/R550PLUS_dataset/four_class_v1',
+    building: false,
+    buildLog: [],
+    buildResult: null,
+    buildError: '',
+    buildId: '',
   },
   log: [],
   theme: getInitialTheme(),
@@ -71,6 +89,7 @@ function reducer(state, action) {
     case 'SET_CONTROL_STATUS': return { ...state, controlStatus: action.value };
     case 'SET_TELEMETRY': return { ...state, telemetry: { ...state.telemetry, ...action.value } };
     case 'SET_COLLECTION': return { ...state, collection: { ...state.collection, ...action.value } };
+    case 'SET_DATASET': return { ...state, dataset: { ...state.dataset, ...action.value } };
     case 'ADD_LOG': return { ...state, log: [`${new Date().toLocaleTimeString()}  ${action.text}`, ...state.log].slice(0, 12) };
     case 'SET_THEME': return { ...state, theme: action.value };
     default: return state;
@@ -85,6 +104,37 @@ function App() {
   const ros = useRosbridge(defaultUrl);
 
   const addLog = useCallback((text) => dispatch({ type: 'ADD_LOG', text }), []);
+  const pendingTelemetryRef = useRef({});
+  const telemetryTimerRef = useRef(null);
+  const pendingCollectionRef = useRef({});
+  const collectionTimerRef = useRef(null);
+
+  const queueTelemetry = useCallback((value) => {
+    pendingTelemetryRef.current = { ...pendingTelemetryRef.current, ...value };
+    if (telemetryTimerRef.current) return;
+    telemetryTimerRef.current = window.setTimeout(() => {
+      telemetryTimerRef.current = null;
+      const pending = pendingTelemetryRef.current;
+      pendingTelemetryRef.current = {};
+      dispatch({ type: 'SET_TELEMETRY', value: pending });
+    }, 100);
+  }, []);
+
+  const queueCollection = useCallback((value) => {
+    pendingCollectionRef.current = { ...pendingCollectionRef.current, ...value };
+    if (collectionTimerRef.current) return;
+    collectionTimerRef.current = window.setTimeout(() => {
+      collectionTimerRef.current = null;
+      const pending = pendingCollectionRef.current;
+      pendingCollectionRef.current = {};
+      dispatch({ type: 'SET_COLLECTION', value: pending });
+    }, 150);
+  }, []);
+
+  useEffect(() => () => {
+    if (telemetryTimerRef.current) window.clearTimeout(telemetryTimerRef.current);
+    if (collectionTimerRef.current) window.clearTimeout(collectionTimerRef.current);
+  }, []);
 
   // Theme
   useEffect(() => {
@@ -114,48 +164,47 @@ function App() {
   // Subscribe to ROS topics
   useEffect(() => {
     const unsubs = [];
-    unsubs.push(ros.subscribe('/PowerVoltage', 'std_msgs/Float32', (msg) => dispatch({ type: 'SET_TELEMETRY', value: { voltage: `${Number(msg.data || 0).toFixed(2)} V` } })));
+    unsubs.push(ros.subscribe('/PowerVoltage', 'std_msgs/Float32', (msg) => queueTelemetry({ voltage: `${Number(msg.data || 0).toFixed(2)} V` })));
     unsubs.push(ros.subscribe('/current_data', 'std_msgs/Float32MultiArray', (msg) => {
       const d = msg.data || [];
-      dispatch({ type: 'SET_TELEMETRY', value: { c0: `${Number(d[0] || 0).toFixed(3)} A`, c1: `${Number(d[1] || 0).toFixed(3)} A`, c2: `${Number(d[2] || 0).toFixed(3)} A` } });
+      queueTelemetry({ c0: `${Number(d[0] || 0).toFixed(3)} A`, c1: `${Number(d[1] || 0).toFixed(3)} A`, c2: `${Number(d[2] || 0).toFixed(3)} A` });
     }));
-    unsubs.push(ros.subscribe(state.imuTopic, 'sensor_msgs/Imu', (msg) => dispatch({ type: 'SET_TELEMETRY', value: { imuZ: Number(msg.angular_velocity?.z || 0).toFixed(3) } })));
+    unsubs.push(ros.subscribe(state.imuTopic, 'sensor_msgs/Imu', (msg) => queueTelemetry({ imuZ: Number(msg.angular_velocity?.z || 0).toFixed(3) })));
     unsubs.push(ros.subscribe('/chassis/heading_deg', 'std_msgs/Float32', (msg) => {
       const value = Number(msg.data);
-      dispatch({ type: 'SET_TELEMETRY', value: { heading: Number.isFinite(value) ? value.toFixed(1) : '--' } });
+      queueTelemetry({ heading: Number.isFinite(value) ? value.toFixed(1) : '--' });
     }));
     unsubs.push(ros.subscribe('/web/heading_status', 'std_msgs/String', (msg) => {
       const parsed = parseJsonStatus(msg.data, {});
       const heading = Number(parsed.heading_deg);
-      dispatch({
-        type: 'SET_TELEMETRY',
-        value: Number.isFinite(heading)
+      queueTelemetry(
+        Number.isFinite(heading)
           ? { headingSource: parsed.source || parsed.mode || msg.data || '--', heading: heading.toFixed(1) }
           : { headingSource: parsed.source || parsed.mode || msg.data || '--' },
-      });
+      );
     }));
     unsubs.push(ros.subscribe('/odom', 'nav_msgs/Odometry', (msg) => {
       const tw = msg.twist?.twist || {};
       const po = msg.pose?.pose || {};
-      dispatch({ type: 'SET_TELEMETRY', value: {
+      queueTelemetry({
         vx: Number(tw.linear?.x || 0).toFixed(2),
         vy: Number(tw.linear?.y || 0).toFixed(2),
         wz: Number(tw.angular?.z || 0).toFixed(2),
         odomX: Number(po.position?.x || 0).toFixed(2),
         odomY: Number(po.position?.y || 0).toFixed(2),
-      }});
+      });
     }));
     unsubs.push(ros.subscribe('/web/control_status', 'std_msgs/String', (msg) => dispatch({ type: 'SET_CONTROL_STATUS', value: msg.data || 'idle' })));
     unsubs.push(ros.subscribe('/web/cruise_status', 'std_msgs/String', (msg) => dispatch({ type: 'SET_CRUISE_STATUS', value: parseCruiseStatus(msg.data || '') })));
     unsubs.push(ros.subscribe('/web/collection_status', 'std_msgs/String', (msg) => {
-      dispatch({ type: 'SET_COLLECTION', value: { status: parseJsonStatus(msg.data, { state: 'idle', collecting: false, sample_id: 0 }) } });
+      queueCollection({ status: parseJsonStatus(msg.data, { state: 'idle', collecting: false, sample_id: 0 }) });
     }));
     unsubs.push(ros.subscribe('/web/current_reader_status', 'std_msgs/String', (msg) => {
       const parsed = parseJsonStatus(msg.data, { connected: false });
-      dispatch({ type: 'SET_COLLECTION', value: { current: parsed, currentPort: parsed.port || state.collection.currentPort } });
+      queueCollection({ current: parsed, currentPort: parsed.port || state.collection.currentPort });
     }));
     return () => unsubs.forEach((unsubscribe) => unsubscribe && unsubscribe());
-  }, [ros.subscribe, state.imuTopic, state.collection.currentPort]);
+  }, [ros.subscribe, state.imuTopic, state.collection.currentPort, queueTelemetry, queueCollection]);
 
   // Heartbeat + command sender
   useEffect(() => {
@@ -244,15 +293,31 @@ function App() {
     addLog(`Current reader reconnect ${state.collection.currentPort}`);
   }
 
+  const autoStopTimerRef = useRef(null);
+
   function startCollection() {
     reconnectCurrentReader();
     publishCollectionConfig({ start: true });
     ros.publish('/web/collection_enable', { data: true });
     addLog(`Collection start ${state.collection.runId || '(auto run_id)'}`);
     setTimeout(refreshFiles, 800);
+
+    // Auto-stop after duration
+    const duration = Number(state.collection.autoStopDuration) || 0;
+    if (duration > 0) {
+      if (autoStopTimerRef.current) clearTimeout(autoStopTimerRef.current);
+      autoStopTimerRef.current = setTimeout(() => {
+        stopCollection();
+        addLog(`Auto-stopped after ${duration}s`);
+      }, duration * 1000);
+    }
   }
 
   function stopCollection() {
+    if (autoStopTimerRef.current) {
+      clearTimeout(autoStopTimerRef.current);
+      autoStopTimerRef.current = null;
+    }
     ros.publish('/web/collection_enable', { data: false });
     addLog('Collection stopped');
     setTimeout(refreshFiles, 500);
@@ -274,6 +339,10 @@ function App() {
 
   function onCollectionFieldChange(field, value) {
     dispatch({ type: 'SET_COLLECTION', value: { [field]: value } });
+  }
+
+  function onDatasetFieldChange(field, value) {
+    dispatch({ type: 'SET_DATASET', value: { [field]: value } });
   }
 
   return (
@@ -341,6 +410,12 @@ function App() {
         onReconnect={reconnectCurrentReader} onRefresh={refreshFiles}
         onDownload={downloadFile}
         onToggleAdvanced={() => dispatch({ type: 'SET_COLLECTION', value: { showAdvanced: !state.collection.showAdvanced } })}
+        t={t}
+      />
+
+      <DatasetBuilder
+        dataset={state.dataset}
+        onFieldChange={onDatasetFieldChange}
         t={t}
       />
 
